@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cefont"
+version = "0.1.0"
+description = "Turn TTF/OTF fonts into FontLibC fonts for the TI-84 Plus CE"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["pillow>=9.2"]
+
+[project.optional-dependencies]
+fonttools = ["fonttools"]
+dev = ["pytest"]
+
+[project.scripts]
+cefont = "cefont.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

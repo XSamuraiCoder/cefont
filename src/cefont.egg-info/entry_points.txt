@@ -1,0 +1,2 @@
+[console_scripts]
+cefont = cefont.cli:main
