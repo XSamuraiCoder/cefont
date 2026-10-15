@@ -2,18 +2,18 @@
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
-[project.urls]
-Homepage = "https://github.com/coolprojects123/cefont"   # adjust to your real repo URL
-
 [project]
-# these are all optional but make the PyPI page look right:
+name = "cefont"
+version = "1.0.0"
+description = "Turn TTF/OTF fonts into FontLibC fonts for the TI-84 Plus CE"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["pillow>=9.2"]
 authors = [{ name = "Akhilesh Gollapudi" }]
-license = "MIT"            # or whatever license you actually use
+license = "MIT"
 keywords = ["ti-84", "fontlibc", "ce-toolchain", "fonts"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
 ]
 
@@ -23,6 +23,9 @@ dev = ["pytest"]
 
 [project.scripts]
 cefont = "cefont.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/akhilgollapudi/cefont"
 
 [tool.setuptools.packages.find]
 where = ["src"]
