@@ -1,4 +1,5 @@
-/Bungee-Regular.ttf
-/BUNGEE.8xv
-/GOOGLESA.8xv
-/GoogleSans-VariableFont_GRAD,opsz,wght.ttf
+# Any fonts used in testing.
+/**/*.ttf
+
+# Any Converted Fonts.
+/**/*.8xv
