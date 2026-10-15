@@ -25,7 +25,7 @@ dev = ["pytest"]
 cefont = "cefont.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/akhilgollapudi/cefont"
+Homepage = "https://github.com/coolprojects123/cefont"
 
 [tool.setuptools.packages.find]
 where = ["src"]
