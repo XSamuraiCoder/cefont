@@ -1,0 +1,15 @@
+/* Stylesheet for CEfont Web */
+:root {
+  --primary-color: #3498db;
+  --secondary-color: #2ecc71;
+  --font-family: 'Arial', sans-serif;
+  --font-size: 16px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --primary-color: #2980b9;
+    --secondary-color: #27ae60;
+    --font-family: 'Arial', sans-serif;
+    --font-size: 16px;
+  }
+}
