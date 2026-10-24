@@ -1,7 +1,0 @@
-pillow>=9.2
-
-[dev]
-pytest
-
-[fonttools]
-fonttools

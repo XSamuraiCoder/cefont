@@ -1,8 +1,13 @@
-# Any fonts used in testing.
-/**/*.ttf
+# Any fonts used in testing
+*.ttf
 
-# Any Converted Fonts.
-/**/*.8xv
+# Any converted fonts
+*.8xv
 
-# any compilation artifacts
-/**/*.pyc
+# Compilation artifacts
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
