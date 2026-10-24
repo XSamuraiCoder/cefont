@@ -3,3 +3,6 @@
 
 # Any Converted Fonts.
 /**/*.8xv
+
+# any compilation artifacts
+/**/*.pyc

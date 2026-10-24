@@ -1,10 +1,12 @@
-"""cefont command line: build (TTF -> appvar in one step), convert, preview."""
+"""cefont command line: build (TTF -> appvar in one step), convert, preview.
+
+No CE toolchain needed: the font pack and appvar are built in pure Python.
+"""
 from __future__ import annotations
 
 import argparse
 import re
 import sys
-import tempfile
 from pathlib import Path
 
 from . import tools
@@ -87,31 +89,31 @@ def cmd_build(a):
     try:
         name = tools.appvar_name(a.name or first.stem)
         title = a.title or re.split(r"[-_ ]", first.stem)[0] or name
+        fnts, previews, scratch = [], [], []
+        for item in a.inputs:
+            p = Path(item)
+            if p.suffix.lower() in TTF_EXT:
+                for size in sizes:
+                    font = _make_font(p, size, a)
+                    fnt = Path.cwd() / f"{p.stem}{size}.fnt"   # no tempfile needed
+                    _write_fnt(font, p, size, fnt)
+                    fnts.append(fnt)
+                    scratch.append(fnt)
+                    previews.append((f"{p.stem} {size}px", font))
+            else:
+                fnts.append(p)
+        if a.carray:
+            tools.font_to_carray(fnts[0], Path(a.carray))
+        data = tools.make_fontpack(fnts, title, a.author, a.version)
+        if not a.keep_fnt:                                    # clean up scratch .fnts
+            for f in scratch:
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
         out = Path(a.output or f"{name}.8xv")
-        with tempfile.TemporaryDirectory() as td:
-            fnts, previews = [], []
-            for item in a.inputs:
-                p = Path(item)
-                if p.suffix.lower() in TTF_EXT:
-                    for size in sizes:
-                        font = _make_font(p, size, a)
-                        fnt = Path(td) / f"{p.stem}{size}.fnt"
-                        _write_fnt(font, p, size, fnt)
-                        fnts.append(fnt)
-                        previews.append((f"{p.stem} {size}px", font))
-                else:
-                    fnts.append(p)
-            if a.keep_fnt:
-                for f in fnts:
-                    if f.parent == Path(td):
-                        (Path.cwd() / f.name).write_bytes(f.read_bytes())
-            if a.carray:
-                tools.convfont_carray(fnts[0], Path(a.carray))
-            packed = Path(td) / "pack.bin"
-            tools.convfont_pack(fnts, packed, title, a.author, a.version)
-            data = packed.read_bytes()
         out.write_bytes(tools.make_appvar(name, data, archived=not a.no_archive))
-    except (OSError, ValueError, FntError, tools.ToolError) as e:
+    except (OSError, ValueError, FntError) as e:
         sys.exit(f"error: {e}")
     print(f"{out}: appvar {name}, {len(fnts)} font(s), {len(data)} bytes"
           f"{'' if a.no_archive else ', archived'}")
