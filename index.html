@@ -1,20 +1,609 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>CEfont Web</title>
-        <link rel="stylesheet" href="style.css">
-    </head>
-    <body>
-        <header>
-            <h1>Welcome to CEfont Web</h1>
-        </header>
-        <main>
-            <p>This is a sample web page for CEfont.</p>
-        </main>
-        <footer>
-            <p>&copy; 2026 XSamurai. All rights reserved.</p>
-        </footer>
-    </body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f6fb">
+  <meta name="description" content="Convert fonts for your TI-84 Plus CE with CEfont Web.">
+  <title>CEfont Web — Font studio</title>
+  <script>
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem('cefont-theme'); } catch (e) {}
+      if (t !== 'light' && t !== 'dark') t = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', t);
+      var m = document.querySelector('meta[name="theme-color"]');
+      if (m) m.setAttribute('content', t === 'dark' ? '#0e111d' : '#f5f6fb');
+    })();
+  </script>
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="CEfont Web home">
+        <img class="brand-logo" src="./favicon.svg" width="32" height="32" alt="" aria-hidden="true">
+        <span class="brand-name">CEfont <span>Web</span></span>
+        <span class="brand-tag">TI-84 Plus CE font studio</span>
+      </a>
+      <div class="header-right">
+        <span class="runtime-status"><span class="ms fill" aria-hidden="true">lock</span> Runs in your browser</span>
+        <a class="help-link" href="https://pypi.org/project/cefont/" target="_blank" rel="noreferrer">About CEfont <span class="ms" aria-hidden="true">open_in_new</span></a>
+        <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle dark mode"><span class="ms">dark_mode</span></button>
+      </div>
+    </header>
+
+    <main>
+      <section class="panel convert-panel" aria-labelledby="convert-title">
+        <div class="panel-head"><span class="ms" aria-hidden="true">tune</span><h2 id="convert-title">Convert a font</h2></div>
+
+        <div class="upload-slot">
+          <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Choose a TTF or OTF font file">
+            <input id="font-file" type="file" accept=".ttf,.otf,font/ttf,font/otf" hidden>
+            <div class="upload-symbol" aria-hidden="true"><span class="ms">upload_file</span></div>
+            <div class="drop-copy"><strong>Drop a font here</strong><span>or <b>browse</b> · TTF / OTF · stays on your device</span></div>
+          </div>
+          <div class="selected-file" id="selected-file" hidden>
+            <div class="file-icon" aria-hidden="true"><span class="ms">font_download</span></div>
+            <div class="file-info"><strong id="file-name">font.ttf</strong><span id="file-details">Ready to configure</span></div>
+            <button class="icon-button" id="remove-file" type="button" aria-label="Remove selected font"><span class="ms">close</span></button>
+          </div>
+        </div>
+
+        <div class="field-grid">
+          <div class="field">
+            <label for="output-name">AppVar name</label>
+            <div class="name-wrap"><input id="output-name" type="text" maxlength="8" value="MYFONT" autocomplete="off" spellcheck="false"><span>.8xv</span></div>
+            <small class="field-help" id="name-help"></small>
+          </div>
+          <div class="field">
+            <label for="font-size">Font sizes (px)</label>
+            <input id="font-size" type="text" value="12,16" maxlength="24" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="12,16">
+            <small class="field-help" id="size-help"></small>
+          </div>
+          <div class="field">
+            <label for="font-weight">Weight</label>
+            <div class="select-wrap"><select id="font-weight"><option value="normal" selected>Normal</option><option value="bold">Bold</option></select><span class="ms" aria-hidden="true">expand_more</span></div>
+            <small class="field-help">Saved as the weight tag, for <code>fontlib_GetFontByStyle</code>.</small>
+          </div>
+          <div class="field">
+            <label for="preview-text">Preview sentence</label>
+            <input id="preview-text" type="text" maxlength="80" value="The quick brown fox jumps over the lazy dog">
+            <small class="field-help">Shown at every size. Not saved in the file.</small>
+          </div>
+        </div>
+
+        <div class="convert-area">
+          <button class="primary-button" id="convert-button" type="button" disabled><span class="ms" aria-hidden="true">auto_fix_high</span><b id="convert-label">Choose a font to continue</b><span class="ms button-arrow" aria-hidden="true">arrow_forward</span></button>
+          <div class="progress" id="progress" hidden><i id="progress-bar"></i></div>
+          <p class="runtime-note" id="runtime-note"><span class="ms fill" aria-hidden="true">info</span><span id="runtime-message">Python loads only when you convert.</span></p>
+        </div>
+      </section>
+
+      <div class="right-col">
+        <section class="panel preview-panel specimen" id="specimen" aria-labelledby="preview-title">
+          <div class="panel-head"><span class="ms" aria-hidden="true">preview</span><h2 id="preview-title">Your font at each size</h2><span class="spacer"></span><span class="pill" id="specimen-badge" hidden>Browser preview</span></div>
+          <div class="scroll">
+            <div class="specimen-empty" id="specimen-empty"><span class="ms" aria-hidden="true">format_size</span><span>Choose a font to see it at every size.</span></div>
+            <div class="specimen-rows" id="specimen-rows"></div>
+          </div>
+          <p class="specimen-note" id="specimen-note" hidden></p>
+        </section>
+
+        <section class="panel output-panel results-section" aria-labelledby="results-title">
+          <div class="panel-head"><span class="ms" aria-hidden="true">download</span><h2 id="results-title">Converted files</h2><span class="spacer"></span><span class="pill" id="results-count">0 files</span></div>
+          <div class="results-empty" id="results-empty"><span class="ms" aria-hidden="true">inventory_2</span><span><b>Your output appears here</b>Download the AppVar after converting.</span></div>
+          <div class="results-list" id="results-list" aria-live="polite" hidden></div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="footer"><span><b>CEfont Web</b> · Browser-based font tools</span><span>Made for the TI-84 Plus CE community <span class="llm-tag">(made with LLM)</span></span></footer>
+  </div>
+
+  <script>
+    (() => {
+      /* ====== Conversion config ====== */
+      const PYODIDE_URL = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
+      const CEFONT_PACKAGE = 'cefont';   // PyPI name; pin a version here, e.g. 'cefont==1.1.0'
+      /* Python bridge: cefont renders the glyphs (from_ttf -> to_fnt); this code then packs them into a
+         FontLibC font pack and wraps it as an archived .8xv AppVar, replacing the `convfont` + `convhex`
+         command-line tools that `cefont build` needs (those cannot run in a browser). */
+      const BRIDGE = String.raw`
+import os, re, json, struct, glob
+
+WEIGHTS = {'thin': 0x20, 'extralight': 0x30, 'extra light': 0x30, 'light': 0x40, 'semilight': 0x60,
+           'normal': 0x80, 'medium': 0x90, 'semibold': 0xA0, 'bold': 0xC0, 'extrabold': 0xE0,
+           'extra bold': 0xE0, 'black': 0xF0}
+STYLES = {'sans-serif': 0, 'sansserif': 0, 'serif': 1, 'upright': 0, 'oblique': 2, 'italic': 4,
+          'monospaced': 8, 'fixed': 8, 'proportional': 0}
+BLANK = set(' 0\u2014\u2013\u2012\u2212')
+ESC = {'n': 10, 'r': 13, 't': 9, '\\': 92, "'": 39, '"': 34, '0': 0, 'a': 7, 'b': 8, 'f': 12, 'v': 11}
+
+
+def num(s):
+    s = s.strip()
+    if s.startswith("'"):
+        inner = s[1:-1] if s.endswith("'") and len(s) > 1 else s[1:]
+        if inner.startswith('\\') and len(inner) > 1:
+            body = inner[1:]
+            if body[0] in 'xX':
+                return int(body[1:], 16)
+            if body[0].isdigit() and len(body) > 1:
+                return int(body, 8)
+            return ESC[body[0]]
+        return ord(inner[0])
+    if s.lower().startswith('0x'):
+        return int(s[2:], 16)
+    if s.startswith('$'):
+        return int(s[1:], 16)
+    return int(s)
+
+
+def named(val, table):
+    v = val.strip().lower()
+    if not v:
+        return 0
+    if v in table:
+        return table[v]
+    out = 0
+    for tok in re.split(r'[,|+\s]+', v):
+        if not tok:
+            continue
+        out |= table[tok] if tok in table else num(tok)
+    return out
+
+
+def split_tag(line):
+    if ':' not in line:
+        return None
+    tag, val = line.split(':', 1)
+    tag = tag.strip().lower().replace(' ', '').replace('-', '')
+    return (tag, val.strip()) if tag else None
+
+
+def parse_fnt(text):
+    """Parse convfont's text font format (what cefont's Font.to_fnt() writes)."""
+    lines = text.lstrip('\ufeff').replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    if not lines or lines[0].strip().lower() != 'convfont':
+        raise ValueError('cefont output is not in convfont text format')
+    meta, i = {}, 1
+    while i < len(lines):
+        t = split_tag(lines[i]); i += 1
+        if t is None:
+            continue
+        if t[0] == 'fontdata':
+            break
+        meta[t[0]] = t[1]
+    if 'height' not in meta:
+        raise ValueError('font has no Height tag')
+    height = num(meta['height'])
+    font_dw = meta.get('doublewidth', '').lower() == 'true'
+    fixed = num(meta['fixedwidth']) if 'fixedwidth' in meta else None
+    default_w = num(meta['defaultwidth']) if 'defaultwidth' in meta else 0
+    glyphs, next_cp, gm = {}, 0, {}
+    while i < len(lines):
+        t = split_tag(lines[i]); i += 1
+        if t is None:
+            continue
+        tag, val = t
+        if tag == 'codepoint':
+            gm['cp'] = num(val)
+        elif tag == 'width':
+            gm['w'] = num(val)
+        elif tag == 'doublewidth':
+            gm['dw'] = val.lower() == 'true'
+        elif tag == 'data':
+            rows = lines[i:i + height]
+            rows += [''] * (height - len(rows))
+            i += height
+            if gm.get('dw', font_dw):
+                rows = [r[::2] for r in rows]
+            bits = [[0 if c in BLANK else 1 for c in r] for r in rows]
+            if 'w' in gm:
+                w = gm['w']
+            elif fixed is not None:
+                w = fixed
+            else:
+                w = max([len(b) for b in bits] + [default_w])
+            bits = [(b + [0] * w)[:w] for b in bits]
+            cp = gm.get('cp', next_cp)
+            if not 0 <= cp <= 255:
+                raise ValueError('code point %d is outside 0-255' % cp)
+            glyphs[cp] = (w, bits)
+            next_cp, gm = cp + 1, {}
+    if not glyphs:
+        raise ValueError('font has no glyphs')
+    g = lambda k: num(meta[k]) if k in meta and meta[k] else 0
+    return dict(height=height, glyphs=glyphs, italic=g('italicadjust'), above=g('spaceabove'),
+                below=g('spacebelow'), weight=named(meta.get('weight', ''), WEIGHTS) or 0x80,
+                style=named(meta.get('style', ''), STYLES), cap=g('capheight'), xh=g('xheight'),
+                baseline=g('baseline'))
+
+
+def u24(v):
+    return int(v).to_bytes(3, 'little')
+
+
+def build_font(f):
+    cps = sorted(f['glyphs'])
+    first, n = cps[0], cps[-1] - cps[0] + 1
+    hdr = 18
+    data_start = hdr + n + 2 * n
+    widths, offs, data = bytearray(n), [0] * n, bytearray()
+    for idx in range(n):
+        g = f['glyphs'].get(first + idx)
+        offs[idx] = data_start + len(data)
+        if g is None or g[0] == 0:
+            continue
+        w, rows = g
+        widths[idx] = w
+        for row in rows:
+            for b in range((w + 7) // 8):
+                byte = 0
+                for k in range(8):
+                    x = b * 8 + k
+                    if x < w and row[x]:
+                        byte |= 0x80 >> k
+                data.append(byte)
+        if offs[idx] > 0xFFFF:
+            raise ValueError('font is too large for FontLibC (bitmap offsets are 16-bit); use a smaller size')
+    out = bytearray([0, f['height'], n & 0xFF, first])
+    out += u24(hdr) + u24(hdr + n)
+    out += bytes([f['italic'], f['above'], f['below'], f['weight'], f['style'], f['cap'], f['xh'], f['baseline']])
+    out += widths
+    for o in offs:
+        out += struct.pack('<H', o)
+    out += data
+    return bytes(out)
+
+
+def build_pack(fonts, family):
+    blobs = [build_font(f) for f in fonts]
+    hdr_len = 8 + 3 + 1 + 3 * len(blobs)
+    meta_off = hdr_len
+    fam = family.encode('latin-1', 'replace') + b'\0'
+    meta = u24(21) + u24(meta_off + 21) + b''.join(u24(0) for _ in range(5)) + fam
+    pos = meta_off + len(meta)
+    offsets = []
+    for b in blobs:
+        offsets.append(pos)
+        pos += len(b)
+    out = bytearray(b'FONTPACK') + u24(meta_off) + bytes([len(blobs)])
+    for o in offsets:
+        out += u24(o)
+    out += meta
+    for b in blobs:
+        out += b
+    return bytes(out)
+
+
+def make_8xv(name, payload, archived=True):
+    data = struct.pack('<H', len(payload)) + payload
+    entry = (struct.pack('<HH', 13, len(data)) + bytes([0x15]) + name.encode('ascii').ljust(8, b'\0') +
+             bytes([0, 0x80 if archived else 0]) + struct.pack('<H', len(data)) + data)
+    head = b'**TI83F*' + bytes([0x1A, 0x0A, 0x00]) + b'Created by CEfont Web'.ljust(42, b'\0') + struct.pack('<H', len(entry))
+    return head + entry + struct.pack('<H', sum(entry) & 0xFFFF)
+
+
+def appvar_name(name):
+    n = re.sub(r'[^A-Za-z0-9]', '', name).upper()[:8]
+    if not n or not n[0].isalpha():
+        n = ('F' + n)[:8]
+    return n
+
+
+def run_convert(src, out_dir, name, sizes, weight):
+    import cefont
+    os.makedirs(out_dir, exist_ok=True)
+    for f in glob.glob(os.path.join(out_dir, '*')):
+        os.remove(f)
+    px = [int(s) for s in re.split(r'[,\s]+', str(sizes).strip()) if s]
+    if not px or any(s < 4 or s > 64 for s in px):
+        raise ValueError('Sizes must be pixel heights between 4 and 64, e.g. 12,16')
+    fonts = []
+    for s in px:
+        kw = {'weight': weight} if weight and weight != 'normal' else {}
+        font = cefont.from_ttf(src, s, **kw)
+        fonts.append(parse_fnt(font.to_fnt()))
+    var = appvar_name(name)
+    blob = make_8xv(var, build_pack(fonts, name))
+    path = os.path.join(out_dir, name + '.8xv')
+    with open(path, 'wb') as fh:
+        fh.write(blob)
+    return json.dumps({'files': [path], 'appvar': var, 'fonts': len(fonts), 'sizes': px})
+`;
+
+      /* ====== Elements ====== */
+      const $ = s => document.querySelector(s);
+      const dropzone = $('#dropzone'), fileInput = $('#font-file'), selectedFile = $('#selected-file');
+      const fileName = $('#file-name'), fileDetails = $('#file-details'), removeButton = $('#remove-file');
+      const convertButton = $('#convert-button'), convertLabel = $('#convert-label'), convertArrow = convertButton.querySelector('.button-arrow');
+      const runtimeMessage = $('#runtime-message'), runtimeNote = $('#runtime-note');
+      const outputName = $('#output-name'), previewText = $('#preview-text'), fontSize = $('#font-size'), fontWeight = $('#font-weight');
+      const specimen = $('#specimen'), specimenEmpty = $('#specimen-empty'), specimenRows = $('#specimen-rows'), specimenBadge = $('#specimen-badge'), specimenNote = $('#specimen-note');
+      const nameHelp = $('#name-help'), sizeHelp = $('#size-help');
+      const progress = $('#progress'), progressBar = $('#progress-bar');
+      const resultsList = $('#results-list'), resultsEmpty = $('#results-empty'), resultsCount = $('#results-count');
+      const previewStyle = document.createElement('style');
+      document.head.appendChild(previewStyle);
+      let currentFile = null, previewUrl = null, busy = false, pyodidePromise = null, lastPack = null, nameTouched = false;
+      const downloadUrls = [];
+
+      /* ====== UI helpers ====== */
+      function say(text, isError = false) {
+        runtimeMessage.textContent = text;
+        runtimeNote.classList.toggle('is-error', isError);
+      }
+      function setProgress(pct) {
+        progress.hidden = pct == null;
+        if (pct != null) progressBar.style.width = pct + '%';
+      }
+      function setBusy(on, label) {
+        busy = on;
+        convertButton.classList.toggle('is-busy', on);
+        convertButton.disabled = on || !currentFile;
+        convertArrow.textContent = on ? 'progress_activity' : 'arrow_forward';
+        if (label) convertLabel.textContent = label;
+      }
+      function fmtSize(bytes) { return bytes < 1024 ? bytes + ' B' : (bytes / 1024).toFixed(1) + ' KB'; }
+
+      /* ====== Parameter helpers ====== */
+      function parseSizes(str) {
+        const parts = String(str).split(/[,\s]+/).filter(Boolean);
+        const sizes = [];
+        let ok = parts.length > 0;
+        parts.forEach(p => {
+          const n = /^\d+$/.test(p) ? parseInt(p, 10) : NaN;
+          if (!(n >= 4 && n <= 64)) { ok = false; return; }
+          if (!sizes.includes(n)) sizes.push(n);
+        });
+        return { sizes, ok };
+      }
+      function updateHelp() {
+        const n = outputName.value;
+        nameHelp.classList.remove('is-error');
+        if (n && !/^[A-Z]/.test(n)) {
+          nameHelp.classList.add('is-error');
+          nameHelp.textContent = 'Must start with a letter; saved as F' + n.slice(0, 7) + '.';
+        } else {
+          nameHelp.textContent = `${n.length}/8 · Name on the calculator. Letters/digits, max 8, start with a letter.`;
+        }
+        const s = parseSizes(fontSize.value);
+        sizeHelp.classList.toggle('is-error', !s.ok);
+        sizeHelp.textContent = s.ok
+          ? (s.sizes.length > 1
+              ? `${s.sizes.length} sizes in one AppVar: index 0 = ${s.sizes[0]} px, 1 = ${s.sizes[1]} px${s.sizes.length > 2 ? ', …' : ''}.`
+              : 'Pixel height, 4–64. Use commas to pack several (12,16).')
+          : 'Whole numbers 4–64, separated by commas.';
+      }
+      function settingsKey() {
+        return [currentFile ? currentFile.name + ':' + currentFile.size : '', parseSizes(fontSize.value).sizes.join(','), fontWeight.value, outputName.value].join('|');
+      }
+
+      /* ====== Preview (browser text, or the real 1-bit glyphs from the converted pack) ====== */
+      function parsePack(b) {
+        const u24 = o => b[o] | (b[o + 1] << 8) | (b[o + 2] << 16), u16 = o => b[o] | (b[o + 1] << 8);
+        const fonts = [];
+        for (let i = 0; i < b[11]; i++) {
+          const fo = u24(12 + 3 * i), height = b[fo + 1], total = b[fo + 2] || 256, first = b[fo + 3];
+          const wt = fo + u24(fo + 4), bm = fo + u24(fo + 7);
+          fonts.push({ height, b, glyph(cp) {
+            const k = cp - first;
+            if (k < 0 || k >= total) return null;
+            return { w: b[wt + k], off: fo + u16(bm + 2 * k) };
+          } });
+        }
+        return fonts;
+      }
+      function drawBitmapText(font, text, scale, color) {
+        const glyphs = []; let width = 0;
+        for (const ch of text) {
+          const cp = ch.codePointAt(0), g = cp < 256 ? font.glyph(cp) : null, w = g ? g.w : 0;
+          glyphs.push([g, w]); width += w;
+        }
+        const cv = document.createElement('canvas');
+        cv.width = Math.max(1, width) * scale; cv.height = font.height * scale; cv.className = 'specimen-canvas';
+        const ctx = cv.getContext('2d'); ctx.fillStyle = color;
+        let x = 0;
+        for (const [g, w] of glyphs) {
+          if (g && w) {
+            const bpr = (w + 7) >> 3;
+            for (let r = 0; r < font.height; r++) for (let c = 0; c < w; c++) {
+              if (font.b[g.off + r * bpr + (c >> 3)] & (0x80 >> (c & 7))) ctx.fillRect((x + c) * scale, r * scale, scale, scale);
+            }
+          }
+          x += w;
+        }
+        return cv;
+      }
+      function renderSpecimen() {
+        const { sizes } = parseSizes(fontSize.value);
+        if (!currentFile || !sizes.length) {
+          specimenRows.textContent = ''; specimenEmpty.hidden = false; specimenBadge.hidden = true; specimenNote.hidden = true;
+          specimenEmpty.lastElementChild.textContent = currentFile ? 'Enter at least one valid size to preview.' : 'Choose a font to see it at every size.';
+          return;
+        }
+        const text = previewText.value || 'The quick brown fox jumps over the lazy dog';
+        let fonts = null;
+        if (lastPack && lastPack.key === settingsKey()) { try { fonts = parsePack(lastPack.bytes); } catch (e) { fonts = null; } }
+        if (fonts && fonts.length !== sizes.length) fonts = null;
+        specimenEmpty.hidden = true; specimenBadge.hidden = false; specimenNote.hidden = false; specimenRows.textContent = '';
+        specimenBadge.textContent = fonts ? 'Calculator render · 1-bit' : 'Browser preview';
+        specimenBadge.classList.toggle('is-exact', !!fonts);
+        specimenNote.textContent = fonts
+          ? 'Actual glyphs saved in your .8xv, drawn 2× with one square per calculator pixel.'
+          : 'Approximate (your browser smooths glyphs). Convert to see the exact 1-bit version.';
+        const color = getComputedStyle(document.documentElement).getPropertyValue('--ink').trim() || '#000';
+        sizes.forEach((px, i) => {
+          const row = document.createElement('div'); row.className = 'specimen-row';
+          const label = document.createElement('div'); label.className = 'specimen-label';
+          label.textContent = `${px} px`;
+          const body = document.createElement('div'); body.className = 'specimen-text';
+          if (fonts) {
+            body.appendChild(drawBitmapText(fonts[i], text, 2, color));
+            const tall = document.createElement('small'); tall.textContent = `index ${i} · ${fonts[i].height} px tall`;
+            label.appendChild(tall);
+          } else {
+            body.textContent = text; body.style.fontSize = px + 'px';
+            body.style.fontFamily = '"UploadedFontPreview", sans-serif';
+            if (fontWeight.value === 'bold') body.style.fontWeight = '700';
+            const tall = document.createElement('small'); tall.textContent = `index ${i}`;
+            label.appendChild(tall);
+          }
+          row.append(label, body); specimenRows.appendChild(row);
+        });
+      }
+
+      function setFile(file) {
+        if (!file) return;
+        const ext = file.name.split('.').pop().toLowerCase();
+        if (!['ttf', 'otf'].includes(ext)) { say('Choose a .ttf or .otf font file.', true); return; }
+        currentFile = file;
+        fileName.textContent = file.name;
+        fileDetails.textContent = `${fmtSize(file.size)} · Ready to configure`;
+        selectedFile.hidden = false; dropzone.hidden = true;
+        setBusy(false, 'Convert font');
+        say('Ready. Python starts when you convert.');
+        const base = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 8);
+        if (base && !nameTouched) outputName.value = base;
+        lastPack = null; updateHelp();
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        previewUrl = URL.createObjectURL(file);
+        previewStyle.textContent = `@font-face{font-family:"UploadedFontPreview";src:url("${previewUrl}");font-display:swap}`;
+        renderSpecimen();
+      }
+      function clearFile() {
+        currentFile = null;
+        selectedFile.hidden = true; dropzone.hidden = false;
+        setBusy(false, 'Choose a font to continue');
+        convertButton.disabled = true;
+        say('Python loads only when you convert.');
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        previewUrl = null; previewStyle.textContent = ''; fileInput.value = '';
+        lastPack = null; renderSpecimen();
+      }
+
+      /* ====== Python runtime (loaded on first convert) ====== */
+      function loadScript(src) {
+        return new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = src; s.onload = resolve; s.onerror = () => reject(new Error('Could not load ' + src));
+          document.head.appendChild(s);
+        });
+      }
+      function getPyodide() {
+        if (!pyodidePromise) {
+          pyodidePromise = (async () => {
+            say('Downloading Python runtime…'); setProgress(10);
+            await loadScript(PYODIDE_URL + 'pyodide.js');
+            const py = await loadPyodide({ indexURL: PYODIDE_URL });
+            say('Installing package manager…'); setProgress(40);
+            await py.loadPackage(['micropip', 'Pillow']);
+            say('Installing cefont…'); setProgress(60);
+            await py.runPythonAsync(`import micropip
+try:
+    await micropip.install(${JSON.stringify(CEFONT_PACKAGE + '[fonttools]')})
+except Exception:
+    await micropip.install(${JSON.stringify(CEFONT_PACKAGE)})`);
+            say('Preparing converter…'); setProgress(85);
+            await py.runPythonAsync(BRIDGE);
+            return py;
+          })();
+          pyodidePromise.catch(() => { pyodidePromise = null; });
+        }
+        return pyodidePromise;
+      }
+
+      /* ====== Conversion ====== */
+      async function convert() {
+        if (!currentFile || busy) return;
+        setBusy(true, 'Working…');
+        try {
+          const py = await getPyodide();
+          say('Converting font…'); setProgress(92);
+          const ext = currentFile.name.split('.').pop().toLowerCase();
+          const sizeInfo = parseSizes(fontSize.value);
+          if (!sizeInfo.ok) throw new Error('Sizes must be whole numbers from 4 to 64, separated by commas.');
+          const name = outputName.value.trim() || 'MYFONT';
+          const inPath = `/tmp/input.${ext}`, outDir = '/tmp/out';
+          py.FS.writeFile(inPath, new Uint8Array(await currentFile.arrayBuffer()));
+          const run = py.globals.get('run_convert');
+          let info;
+          try { info = JSON.parse(run(inPath, outDir, name, sizeInfo.sizes.join(','), fontWeight.value)); }
+          finally { run.destroy(); }
+          const files = info.files;
+          const results = files.map(path => {
+            const bytes = py.FS.readFile(path);
+            const base = path.split('/').pop();
+            return { name: base, bytes, info };
+          });
+          addResults(results);
+          lastPack = { bytes: results[0].bytes.subarray(74), key: settingsKey() };
+          renderSpecimen();
+          setProgress(100);
+          say('Done. Your file is ready below.');
+        } catch (err) {
+          console.error(err);
+          const msg = String(err && err.message || err).split('\n').filter(Boolean).slice(-1)[0] || 'Unknown error';
+          say('Conversion failed: ' + msg, true);
+          setProgress(null);
+        } finally {
+          setBusy(false, 'Convert font');
+          setTimeout(() => { if (!busy) setProgress(null); }, 900);
+        }
+      }
+
+      function addResults(items) {
+        downloadUrls.splice(0).forEach(URL.revokeObjectURL);
+        resultsList.textContent = '';
+        items.forEach(({ name, bytes, info }) => {
+          const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+          downloadUrls.push(url);
+          const row = document.createElement('div'); row.className = 'result-item';
+          const ext = (name.split('.').pop() || 'file').toUpperCase().slice(0, 4);
+          row.innerHTML = '<div class="result-icon"><span class="ms">description</span></div><div class="result-info"><strong></strong><span></span></div><a class="download-button"><span class="ms">download</span>Download</a>';
+          row.querySelector('strong').textContent = name;
+          row.querySelector('.result-info span').textContent = `${fmtSize(bytes.length)} · AppVar ${info.appvar} · ${info.fonts} size${info.fonts === 1 ? '' : 's'} (${info.sizes.join(', ')} px)`;
+          const hint = document.createElement('span'); hint.className = 'result-preview';
+          hint.textContent = `fontlib_GetFontByIndex("${info.appvar}", 0)`;
+          row.querySelector('.result-info').appendChild(hint);
+          const a = row.querySelector('a'); a.href = url; a.download = name;
+          resultsList.appendChild(row);
+        });
+        resultsList.hidden = false; resultsEmpty.hidden = true;
+        resultsCount.textContent = items.length + (items.length === 1 ? ' file' : ' files');
+      }
+
+      /* ====== Theme ====== */
+      const themeToggle = $('#theme-toggle');
+      function applyTheme(t, save) {
+        document.documentElement.setAttribute('data-theme', t);
+        themeToggle.firstElementChild.textContent = t === 'dark' ? 'light_mode' : 'dark_mode';
+        themeToggle.setAttribute('aria-label', t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+        const m = document.querySelector('meta[name="theme-color"]');
+        if (m) m.setAttribute('content', t === 'dark' ? '#0e111d' : '#f5f6fb');
+        if (save) { try { localStorage.setItem('cefont-theme', t); } catch (e) {} }
+      }
+      applyTheme(document.documentElement.getAttribute('data-theme') || 'light', false);
+      themeToggle.addEventListener('click', () => { applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark', true); renderSpecimen(); });
+
+      /* ====== Events ====== */
+      dropzone.addEventListener('click', () => fileInput.click());
+      dropzone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } });
+      fileInput.addEventListener('change', () => setFile(fileInput.files[0]));
+      removeButton.addEventListener('click', clearFile);
+      ['dragenter', 'dragover'].forEach(n => dropzone.addEventListener(n, e => { e.preventDefault(); dropzone.classList.add('is-dragging'); }));
+      ['dragleave', 'drop'].forEach(n => dropzone.addEventListener(n, e => { e.preventDefault(); dropzone.classList.remove('is-dragging'); }));
+      dropzone.addEventListener('drop', e => setFile(e.dataTransfer.files[0]));
+      previewText.addEventListener('input', renderSpecimen);
+      fontSize.addEventListener('input', () => { updateHelp(); renderSpecimen(); });
+      fontWeight.addEventListener('change', renderSpecimen);
+      outputName.addEventListener('input', () => { nameTouched = true; outputName.value = outputName.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 8); updateHelp(); });
+      updateHelp(); renderSpecimen();
+      convertButton.addEventListener('click', convert);
+    })();
+  </script>
+</body>
 </html>
