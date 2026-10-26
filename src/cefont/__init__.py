@@ -17,7 +17,7 @@ __all__ = [
     # appvar packaging
     "appvar_name", "make_appvar",
 ]
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 # Full no-toolchain pipeline in the library:
 #   from cefont import from_ttf, serialize_fontpack, make_appvar

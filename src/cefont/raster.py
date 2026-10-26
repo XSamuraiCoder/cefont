@@ -35,17 +35,44 @@ def font_codepoints(path) -> set[int] | None:
         return None
 
 
-def _raster_char(font, ch, canvas_h, base_y, margin, mono, thr):
-    adv = round(font.getlength(ch))
-    w = adv + 2 * margin
-    img = Image.new("L", (w, canvas_h), 0)
-    draw = ImageDraw.Draw(img)
-    draw.fontmode = "1" if mono else "L"
-    draw.text((margin, base_y), ch, font=font, fill=255, anchor="ls")
-    bits = [[img.getpixel((x, y)) >= thr for x in range(w)] for y in range(canvas_h)]
+def _raster_char(font, big, scale, ch, canvas_h, base_y, margin, mono, thr,
+                 overhang=1):
+    """Rasterize one character to rows of booleans (True = ink).
+
+    scale > 1 draws the glyph `scale` times larger (`big` is the font at that
+    size), box-filters it down to the target size so every output pixel holds
+    its exact fractional coverage (0-255), then thresholds that. This keeps thin
+    strokes and curves far better than rendering and thresholding at 1x.
+    """
+    if scale > 1:
+        adv = round(big.getlength(ch) / scale)
+        w = adv + 2 * margin
+        hi_img = Image.new("L", (w * scale, canvas_h * scale), 0)
+        draw = ImageDraw.Draw(hi_img)
+        draw.fontmode = "L"
+        draw.text((margin * scale, base_y * scale), ch, font=big, fill=255, anchor="ls")
+        img = hi_img.resize((w, canvas_h), Image.BOX)
+    else:
+        adv = round(font.getlength(ch))
+        w = adv + 2 * margin
+        img = Image.new("L", (w, canvas_h), 0)
+        draw = ImageDraw.Draw(img)
+        draw.fontmode = "1" if mono else "L"
+        draw.text((margin, base_y), ch, font=font, fill=255, anchor="ls")
+    px = img.load()
+    bits = [[px[x, y] >= thr for x in range(w)] for y in range(canvas_h)]
     ink = [x for x in range(w) if any(row[x] for row in bits)]
-    lo = min(margin, ink[0]) if ink else margin
-    hi = max(margin + adv, ink[-1] + 1) if ink else margin + adv
+    # FontLibC has no per-glyph offsets and glyphs are simply placed side by
+    # side, so ink that hangs outside the advance width can't overlap the
+    # neighbouring glyph like it does in the TTF; it just widens the glyph and
+    # opens up the spacing. Script fonts (Lobster, ...) overhang a lot, so only
+    # allow `overhang` px of ink beyond the advance on each side; the rest is
+    # clipped. Use a large value (e.g. 99) for the old, unclamped behaviour.
+    if ink:
+        lo = max(margin - overhang, min(margin, ink[0]))
+        hi = min(margin + adv + overhang, max(margin + adv, ink[-1] + 1))
+    else:
+        lo, hi = margin, margin + adv
     if hi == lo:
         hi += 1  # a glyph needs at least one column
     return [row[lo:hi] for row in bits], hi - lo
@@ -63,19 +90,35 @@ def _last_ink_row(rows):
     return None if r is None else len(rows) - 1 - r
 
 
-def from_ttf(path, size: int, *, codepoints=None, mono: bool = True,
-             threshold: int = 128, tracking: int = 0, weight: str = "normal",
-             style: str = "sans-serif", space_above: int = 0, space_below: int = 0,
-             trim: bool = True, warn=None) -> Font:
+DEFAULT_SUPERSAMPLE = 8
+DEFAULT_THRESHOLD = 100  # ~39% pixel coverage: keeps hairlines without bloating stems
+
+
+def from_ttf(path, size: int, *, codepoints=None, mono: bool = False,
+             threshold: int = DEFAULT_THRESHOLD, tracking: int = 0,
+             weight: str = "normal", style: str = "sans-serif",
+             space_above: int = 0, space_below: int = 0, trim: bool = True,
+             overhang: int = 1, supersample: int = DEFAULT_SUPERSAMPLE,
+             warn=None) -> Font:
     """Render a TTF/OTF at `size` pixels into a Font.
 
-    mono=True uses hinted 1-bit rendering; mono=False renders antialiased and
-    thresholds at `threshold`. `warn(msg)` is called for skipped characters.
+    Default (mono=False) is the high-quality path: each glyph is drawn
+    `supersample` times larger, box-filtered down to `size`, and a pixel is set
+    when its coverage is >= `threshold` (0-255). supersample=1 skips this and
+    thresholds a plain antialiased render. mono=True uses FreeType's hinted
+    1-bit renderer instead (crisp on plain sans fonts, poor on script fonts).
+    `overhang` is how many px of ink may stick out
+    past a glyph's advance width on each side before it is clipped (keeps the
+    font's intended spacing). `warn(msg)` is called for skipped characters.
     """
     path = Path(path)
     codepoints = list(codepoints) if codepoints is not None else list(range(32, 127))
     pil_font = ImageFont.truetype(str(path), size, layout_engine=ImageFont.Layout.BASIC)
     thr = 128 if mono else max(1, min(255, threshold))
+    scale = 1 if mono else max(1, int(supersample))
+    big = (ImageFont.truetype(str(path), size * scale,
+                              layout_engine=ImageFont.Layout.BASIC)
+           if scale > 1 else None)
     ascent, descent = pil_font.getmetrics()
     pad = max(2, size // 4)
     canvas_h = ascent + descent + 2 * pad
@@ -89,10 +132,15 @@ def from_ttf(path, size: int, *, codepoints=None, mono: bool = True,
             if warn:
                 warn(f"font has no glyph for U+{cp:04X}, skipping")
             continue
-        rows, w = _raster_char(pil_font, chr(cp), canvas_h, base_y, margin, mono, thr)
+        rows, w = _raster_char(pil_font, big, scale, chr(cp), canvas_h, base_y,
+                               margin, mono, thr, overhang)
         if tracking:
-            rows = [r + [False] * tracking for r in rows]
-            w += tracking
+            new_w = max(1, w + tracking)
+            if tracking > 0:
+                rows = [r + [False] * tracking for r in rows]
+            else:  # negative tracking: trim columns so rows stay `w` wide
+                rows = [r[:new_w] for r in rows]
+            w = new_w
         raw[cp] = (rows, w)
     if not raw:
         raise ValueError("no glyphs produced")
@@ -118,7 +166,8 @@ def from_ttf(path, size: int, *, codepoints=None, mono: bool = True,
         return ["".join("#" if b else " " for b in r) for r in rows[top:bottom + 1]]
 
     def ink_top(ch):
-        rows, _ = _raster_char(pil_font, ch, canvas_h, base_y, margin, mono, thr)
+        rows, _ = _raster_char(pil_font, big, scale, ch, canvas_h, base_y, margin,
+                               mono, thr, overhang)
         r = _first_ink_row(rows[top:bottom + 1])
         return r if r is not None else 0
 

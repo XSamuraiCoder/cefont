@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import tools
 from .model import Font, FntError
-from .raster import from_ttf, parse_ranges
+from .raster import DEFAULT_SUPERSAMPLE, DEFAULT_THRESHOLD, from_ttf, parse_ranges
 
 WEIGHTS = ["thin", "extralight", "light", "semilight", "normal",
            "semibold", "bold", "extrabold", "black"]
@@ -29,8 +29,9 @@ def _print_preview(font: Font, text: str) -> None:
 def _make_font(path, size, a) -> Font:
     return from_ttf(
         path, size, codepoints=parse_ranges(a.range), mono=a.mode == "mono",
-        threshold=a.threshold, tracking=a.tracking, weight=a.weight, style=a.style,
+        threshold=a.threshold, supersample=a.supersample, tracking=a.tracking, weight=a.weight, style=a.style,
         space_above=a.space_above, space_below=a.space_below, trim=not a.no_trim,
+        overhang=a.overhang,
         warn=lambda m: print(f"warning: {m}", file=sys.stderr))
 
 
@@ -41,14 +42,22 @@ def _write_fnt(font: Font, ttf: Path, size: int, out: Path) -> None:
 
 def _add_raster_args(p):
     p.add_argument("--range", default="32-126", help="code points, e.g. 32-126,160-255")
-    p.add_argument("--mode", choices=["mono", "aa"], default="mono")
-    p.add_argument("--threshold", type=int, default=128)
+    p.add_argument("--mode", choices=["aa", "mono"], default="aa",
+                   help="aa = supersampled high quality (default); mono = hinted 1-bit")
+    p.add_argument("--threshold", type=int, default=DEFAULT_THRESHOLD,
+                   help="pixel coverage 0-255 needed to turn a pixel on (default "
+                        f"{DEFAULT_THRESHOLD}; lower = bolder, higher = thinner)")
+    p.add_argument("--supersample", type=int, default=DEFAULT_SUPERSAMPLE,
+                   help=f"render N times larger, then downsample (default {DEFAULT_SUPERSAMPLE}; 1 = off)")
     p.add_argument("--tracking", type=int, default=0)
     p.add_argument("--weight", default="normal", choices=WEIGHTS)
     p.add_argument("--style", default="sans-serif")
     p.add_argument("--space-above", type=int, default=0)
     p.add_argument("--space-below", type=int, default=0)
     p.add_argument("--no-trim", action="store_true")
+    p.add_argument("--overhang", type=int, default=1,
+                   help="px of ink allowed past a glyph's advance width on each side "
+                        "(default 1; use 99 for the old unclamped behaviour)")
 
 
 def cmd_convert(a):
