@@ -72,6 +72,31 @@
             <input id="preview-text" type="text" maxlength="80" value="The quick brown fox jumps over the lazy dog">
             <small class="field-help">Shown at every size. Not saved in the file.</small>
           </div>
+          <div class="field">
+            <label for="render-mode">Rendering</label>
+            <div class="select-wrap"><select id="render-mode"><option value="aa" selected>High quality</option><option value="mono">Classic hinted 1-bit</option></select><span class="ms" aria-hidden="true">expand_more</span></div>
+            <small class="field-help" id="render-help"></small>
+          </div>
+          <div class="field">
+            <label for="supersample">Supersampling</label>
+            <input id="supersample" type="text" value="8" maxlength="2" inputmode="numeric" autocomplete="off" spellcheck="false">
+            <small class="field-help" id="supersample-help"></small>
+          </div>
+          <div class="field wide">
+            <div class="label-row"><label for="threshold-range">Boldness threshold</label><input id="threshold" class="num-input" type="text" value="100" maxlength="3" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Boldness threshold value"></div>
+            <input id="threshold-range" type="range" min="1" max="255" step="1" value="100">
+            <small class="field-help" id="threshold-help"></small>
+          </div>
+          <div class="field">
+            <div class="label-row"><label for="overhang-range">Overhang</label><output id="overhang-value" for="overhang-range">1 px</output></div>
+            <input id="overhang-range" type="range" min="0" max="4" step="1" value="1">
+            <small class="field-help">How far ink may stick out past a glyph's edge. 0 is tightest but clips swashes.</small>
+          </div>
+          <div class="field">
+            <div class="label-row"><label for="tracking-range">Letter spacing</label><output id="tracking-value" for="tracking-range">0 px</output></div>
+            <input id="tracking-range" type="range" min="-3" max="4" step="1" value="0">
+            <small class="field-help">Pixels added after every glyph. Negative tightens.</small>
+          </div>
         </div>
 
         <div class="convert-area">
@@ -106,185 +131,11 @@
     (() => {
       /* ====== Conversion config ====== */
       const PYODIDE_URL = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
-      const CEFONT_PACKAGE = 'cefont';   // PyPI name; pin a version here, e.g. 'cefont==1.1.0'
-      /* Python bridge: cefont renders the glyphs (from_ttf -> to_fnt); this code then packs them into a
-         FontLibC font pack and wraps it as an archived .8xv AppVar, replacing the `convfont` + `convhex`
-         command-line tools that `cefont build` needs (those cannot run in a browser). */
+      const CEFONT_SPEC = '>=1.1.1';   // 1.2.0+: supersampled rendering and the font-pack/appvar writer used below
+      /* Python bridge: everything is done by the cefont package itself (the same code the command line
+         uses), so the website and `cefont build` produce the same fonts and the same file layout. */
       const BRIDGE = String.raw`
-import os, re, json, struct, glob
-
-WEIGHTS = {'thin': 0x20, 'extralight': 0x30, 'extra light': 0x30, 'light': 0x40, 'semilight': 0x60,
-           'normal': 0x80, 'medium': 0x90, 'semibold': 0xA0, 'bold': 0xC0, 'extrabold': 0xE0,
-           'extra bold': 0xE0, 'black': 0xF0}
-STYLES = {'sans-serif': 0, 'sansserif': 0, 'serif': 1, 'upright': 0, 'oblique': 2, 'italic': 4,
-          'monospaced': 8, 'fixed': 8, 'proportional': 0}
-BLANK = set(' 0\u2014\u2013\u2012\u2212')
-ESC = {'n': 10, 'r': 13, 't': 9, '\\': 92, "'": 39, '"': 34, '0': 0, 'a': 7, 'b': 8, 'f': 12, 'v': 11}
-
-
-def num(s):
-    s = s.strip()
-    if s.startswith("'"):
-        inner = s[1:-1] if s.endswith("'") and len(s) > 1 else s[1:]
-        if inner.startswith('\\') and len(inner) > 1:
-            body = inner[1:]
-            if body[0] in 'xX':
-                return int(body[1:], 16)
-            if body[0].isdigit() and len(body) > 1:
-                return int(body, 8)
-            return ESC[body[0]]
-        return ord(inner[0])
-    if s.lower().startswith('0x'):
-        return int(s[2:], 16)
-    if s.startswith('$'):
-        return int(s[1:], 16)
-    return int(s)
-
-
-def named(val, table):
-    v = val.strip().lower()
-    if not v:
-        return 0
-    if v in table:
-        return table[v]
-    out = 0
-    for tok in re.split(r'[,|+\s]+', v):
-        if not tok:
-            continue
-        out |= table[tok] if tok in table else num(tok)
-    return out
-
-
-def split_tag(line):
-    if ':' not in line:
-        return None
-    tag, val = line.split(':', 1)
-    tag = tag.strip().lower().replace(' ', '').replace('-', '')
-    return (tag, val.strip()) if tag else None
-
-
-def parse_fnt(text):
-    """Parse convfont's text font format (what cefont's Font.to_fnt() writes)."""
-    lines = text.lstrip('\ufeff').replace('\r\n', '\n').replace('\r', '\n').split('\n')
-    if not lines or lines[0].strip().lower() != 'convfont':
-        raise ValueError('cefont output is not in convfont text format')
-    meta, i = {}, 1
-    while i < len(lines):
-        t = split_tag(lines[i]); i += 1
-        if t is None:
-            continue
-        if t[0] == 'fontdata':
-            break
-        meta[t[0]] = t[1]
-    if 'height' not in meta:
-        raise ValueError('font has no Height tag')
-    height = num(meta['height'])
-    font_dw = meta.get('doublewidth', '').lower() == 'true'
-    fixed = num(meta['fixedwidth']) if 'fixedwidth' in meta else None
-    default_w = num(meta['defaultwidth']) if 'defaultwidth' in meta else 0
-    glyphs, next_cp, gm = {}, 0, {}
-    while i < len(lines):
-        t = split_tag(lines[i]); i += 1
-        if t is None:
-            continue
-        tag, val = t
-        if tag == 'codepoint':
-            gm['cp'] = num(val)
-        elif tag == 'width':
-            gm['w'] = num(val)
-        elif tag == 'doublewidth':
-            gm['dw'] = val.lower() == 'true'
-        elif tag == 'data':
-            rows = lines[i:i + height]
-            rows += [''] * (height - len(rows))
-            i += height
-            if gm.get('dw', font_dw):
-                rows = [r[::2] for r in rows]
-            bits = [[0 if c in BLANK else 1 for c in r] for r in rows]
-            if 'w' in gm:
-                w = gm['w']
-            elif fixed is not None:
-                w = fixed
-            else:
-                w = max([len(b) for b in bits] + [default_w])
-            bits = [(b + [0] * w)[:w] for b in bits]
-            cp = gm.get('cp', next_cp)
-            if not 0 <= cp <= 255:
-                raise ValueError('code point %d is outside 0-255' % cp)
-            glyphs[cp] = (w, bits)
-            next_cp, gm = cp + 1, {}
-    if not glyphs:
-        raise ValueError('font has no glyphs')
-    g = lambda k: num(meta[k]) if k in meta and meta[k] else 0
-    return dict(height=height, glyphs=glyphs, italic=g('italicadjust'), above=g('spaceabove'),
-                below=g('spacebelow'), weight=named(meta.get('weight', ''), WEIGHTS) or 0x80,
-                style=named(meta.get('style', ''), STYLES), cap=g('capheight'), xh=g('xheight'),
-                baseline=g('baseline'))
-
-
-def u24(v):
-    return int(v).to_bytes(3, 'little')
-
-
-def build_font(f):
-    cps = sorted(f['glyphs'])
-    first, n = cps[0], cps[-1] - cps[0] + 1
-    hdr = 18
-    data_start = hdr + n + 2 * n
-    widths, offs, data = bytearray(n), [0] * n, bytearray()
-    for idx in range(n):
-        g = f['glyphs'].get(first + idx)
-        offs[idx] = data_start + len(data)
-        if g is None or g[0] == 0:
-            continue
-        w, rows = g
-        widths[idx] = w
-        for row in rows:
-            for b in range((w + 7) // 8):
-                byte = 0
-                for k in range(8):
-                    x = b * 8 + k
-                    if x < w and row[x]:
-                        byte |= 0x80 >> k
-                data.append(byte)
-        if offs[idx] > 0xFFFF:
-            raise ValueError('font is too large for FontLibC (bitmap offsets are 16-bit); use a smaller size')
-    out = bytearray([0, f['height'], n & 0xFF, first])
-    out += u24(hdr) + u24(hdr + n)
-    out += bytes([f['italic'], f['above'], f['below'], f['weight'], f['style'], f['cap'], f['xh'], f['baseline']])
-    out += widths
-    for o in offs:
-        out += struct.pack('<H', o)
-    out += data
-    return bytes(out)
-
-
-def build_pack(fonts, family):
-    blobs = [build_font(f) for f in fonts]
-    hdr_len = 8 + 3 + 1 + 3 * len(blobs)
-    meta_off = hdr_len
-    fam = family.encode('latin-1', 'replace') + b'\0'
-    meta = u24(21) + u24(meta_off + 21) + b''.join(u24(0) for _ in range(5)) + fam
-    pos = meta_off + len(meta)
-    offsets = []
-    for b in blobs:
-        offsets.append(pos)
-        pos += len(b)
-    out = bytearray(b'FONTPACK') + u24(meta_off) + bytes([len(blobs)])
-    for o in offsets:
-        out += u24(o)
-    out += meta
-    for b in blobs:
-        out += b
-    return bytes(out)
-
-
-def make_8xv(name, payload, archived=True):
-    data = struct.pack('<H', len(payload)) + payload
-    entry = (struct.pack('<HH', 13, len(data)) + bytes([0x15]) + name.encode('ascii').ljust(8, b'\0') +
-             bytes([0, 0x80 if archived else 0]) + struct.pack('<H', len(data)) + data)
-    head = b'**TI83F*' + bytes([0x1A, 0x0A, 0x00]) + b'Created by CEfont Web'.ljust(42, b'\0') + struct.pack('<H', len(entry))
-    return head + entry + struct.pack('<H', sum(entry) & 0xFFFF)
+import os, re, json, glob
 
 
 def appvar_name(name):
@@ -294,7 +145,7 @@ def appvar_name(name):
     return n
 
 
-def run_convert(src, out_dir, name, sizes, weight):
+def run_convert(src, out_dir, name, sizes, weight, mode, threshold, supersample, overhang, tracking):
     import cefont
     os.makedirs(out_dir, exist_ok=True)
     for f in glob.glob(os.path.join(out_dir, '*')):
@@ -302,17 +153,25 @@ def run_convert(src, out_dir, name, sizes, weight):
     px = [int(s) for s in re.split(r'[,\s]+', str(sizes).strip()) if s]
     if not px or any(s < 4 or s > 64 for s in px):
         raise ValueError('Sizes must be pixel heights between 4 and 64, e.g. 12,16')
-    fonts = []
-    for s in px:
-        kw = {'weight': weight} if weight and weight != 'normal' else {}
-        font = cefont.from_ttf(src, s, **kw)
-        fonts.append(parse_fnt(font.to_fnt()))
+    kw = {'weight': weight or 'normal',
+          'overhang': max(0, min(4, int(overhang))),
+          'tracking': max(-3, min(4, int(tracking)))}
+    if mode == 'mono':
+        kw['mono'] = True                      # classic hinted 1-bit renderer
+    else:
+        kw['mono'] = False                     # supersampled (default quality) renderer
+        kw['threshold'] = max(1, min(255, int(threshold)))
+        kw['supersample'] = max(1, min(12, int(supersample)))
+    warnings = []
+    fonts = [cefont.from_ttf(src, s, warn=warnings.append, **kw) for s in px]
     var = appvar_name(name)
-    blob = make_8xv(var, build_pack(fonts, name))
+    pack = cefont.serialize_fontpack(fonts, name=name, version='1', codepage='ASCII')
+    blob = cefont.make_appvar(var, pack, archived=True, comment=b'Created by CEfont Web')
     path = os.path.join(out_dir, name + '.8xv')
     with open(path, 'wb') as fh:
         fh.write(blob)
-    return json.dumps({'files': [path], 'appvar': var, 'fonts': len(fonts), 'sizes': px})
+    return json.dumps({'files': [path], 'appvar': var, 'fonts': len(fonts), 'sizes': px,
+                       'warnings': sorted(set(warnings))})
 `;
 
       /* ====== Elements ====== */
@@ -322,6 +181,9 @@ def run_convert(src, out_dir, name, sizes, weight):
       const convertButton = $('#convert-button'), convertLabel = $('#convert-label'), convertArrow = convertButton.querySelector('.button-arrow');
       const runtimeMessage = $('#runtime-message'), runtimeNote = $('#runtime-note');
       const outputName = $('#output-name'), previewText = $('#preview-text'), fontSize = $('#font-size'), fontWeight = $('#font-weight');
+      const renderMode = $('#render-mode'), renderHelp = $('#render-help'), thresholdInput = $('#threshold'), thresholdRange = $('#threshold-range'), thresholdHelp = $('#threshold-help');
+      const supersampleInput = $('#supersample'), supersampleHelp = $('#supersample-help');
+      const overhangRange = $('#overhang-range'), overhangValue = $('#overhang-value'), trackRange = $('#tracking-range'), trackValue = $('#tracking-value');
       const specimen = $('#specimen'), specimenEmpty = $('#specimen-empty'), specimenRows = $('#specimen-rows'), specimenBadge = $('#specimen-badge'), specimenNote = $('#specimen-note');
       const nameHelp = $('#name-help'), sizeHelp = $('#size-help');
       const progress = $('#progress'), progressBar = $('#progress-bar');
@@ -361,7 +223,34 @@ def run_convert(src, out_dir, name, sizes, weight):
         });
         return { sizes, ok };
       }
+      function parseThreshold(str) {
+        const n = /^\d+$/.test(String(str).trim()) ? parseInt(str, 10) : NaN;
+        return { value: n, ok: n >= 1 && n <= 255 };
+      }
+      function parseSupersample(str) {
+        const n = /^\d+$/.test(String(str).trim()) ? parseInt(str, 10) : NaN;
+        return { value: n, ok: n >= 1 && n <= 12 };
+      }
+      function setFill(el) {
+        el.style.setProperty('--fill', ((el.value - el.min) / (el.max - el.min) * 100) + '%');
+      }
       function updateHelp() {
+        const mono = renderMode.value === 'mono';
+        thresholdInput.disabled = mono; thresholdRange.disabled = mono; supersampleInput.disabled = mono;
+        const t = parseThreshold(thresholdInput.value);
+        thresholdHelp.classList.toggle('is-error', !mono && !t.ok);
+        thresholdHelp.textContent = mono ? 'Not used by classic 1-bit rendering.'
+          : t.ok ? 'Pixel coverage needed to turn a dot on (1–255). Lower = bolder, higher = thinner.' : 'Whole number from 1 to 255.';
+        const ss = parseSupersample(supersampleInput.value);
+        supersampleHelp.classList.toggle('is-error', !mono && !ss.ok);
+        supersampleHelp.textContent = mono ? 'Not used by classic 1-bit rendering.'
+          : ss.ok ? '1–12. Higher is smoother but slower. Default 8.' : 'Whole number from 1 to 12.';
+        overhangValue.textContent = overhangRange.value + ' px';
+        const tr = parseInt(trackRange.value, 10);
+        trackValue.textContent = (tr > 0 ? '+' : tr < 0 ? '\u2212' : '') + Math.abs(tr) + ' px';
+        [thresholdRange, overhangRange, trackRange].forEach(setFill);
+        renderHelp.textContent = mono ? 'Hinted 1-bit text. Crisp on plain sans-serif fonts, rough on script fonts.'
+          : 'Draws each glyph 8× larger, then averages down. Keeps thin strokes and curves.';
         const n = outputName.value;
         nameHelp.classList.remove('is-error');
         if (n && !/^[A-Z]/.test(n)) {
@@ -379,7 +268,7 @@ def run_convert(src, out_dir, name, sizes, weight):
           : 'Whole numbers 4–64, separated by commas.';
       }
       function settingsKey() {
-        return [currentFile ? currentFile.name + ':' + currentFile.size : '', parseSizes(fontSize.value).sizes.join(','), fontWeight.value, outputName.value].join('|');
+        return [currentFile ? currentFile.name + ':' + currentFile.size : '', parseSizes(fontSize.value).sizes.join(','), fontWeight.value, outputName.value, renderMode.value, thresholdInput.value, supersampleInput.value, overhangRange.value, trackRange.value].join('|');
       }
 
       /* ====== Preview (browser text, or the real 1-bit glyphs from the converted pack) ====== */
@@ -392,7 +281,11 @@ def run_convert(src, out_dir, name, sizes, weight):
           fonts.push({ height, b, glyph(cp) {
             const k = cp - first;
             if (k < 0 || k >= total) return null;
-            return { w: b[wt + k], off: fo + u16(bm + 2 * k) };
+            const w = b[wt + k];
+            if (!w) return null;
+            const cols = ((w - 1) >> 3) + 1;
+            /* FontLibC stores offset = start - 2 + (cols - 1), with the bytes of each row in reverse order */
+            return { w, cols, off: fo + u16(bm + 2 * k) + 2 - (cols - 1) };
           } });
         }
         return fonts;
@@ -409,9 +302,9 @@ def run_convert(src, out_dir, name, sizes, weight):
         let x = 0;
         for (const [g, w] of glyphs) {
           if (g && w) {
-            const bpr = (w + 7) >> 3;
+            const bpr = g.cols;
             for (let r = 0; r < font.height; r++) for (let c = 0; c < w; c++) {
-              if (font.b[g.off + r * bpr + (c >> 3)] & (0x80 >> (c & 7))) ctx.fillRect((x + c) * scale, r * scale, scale, scale);
+              if (font.b[g.off + r * bpr + (bpr - 1 - (c >> 3))] & (0x80 >> (c & 7))) ctx.fillRect((x + c) * scale, r * scale, scale, scale);
             }
           }
           x += w;
@@ -504,9 +397,9 @@ def run_convert(src, out_dir, name, sizes, weight):
             say('Installing cefont…'); setProgress(60);
             await py.runPythonAsync(`import micropip
 try:
-    await micropip.install(${JSON.stringify(CEFONT_PACKAGE + '[fonttools]')})
+    await micropip.install(${JSON.stringify('cefont[fonttools]' + CEFONT_SPEC)})
 except Exception:
-    await micropip.install(${JSON.stringify(CEFONT_PACKAGE)})`);
+    await micropip.install(${JSON.stringify('cefont' + CEFONT_SPEC)})`);
             say('Preparing converter…'); setProgress(85);
             await py.runPythonAsync(BRIDGE);
             return py;
@@ -526,12 +419,16 @@ except Exception:
           const ext = currentFile.name.split('.').pop().toLowerCase();
           const sizeInfo = parseSizes(fontSize.value);
           if (!sizeInfo.ok) throw new Error('Sizes must be whole numbers from 4 to 64, separated by commas.');
+          const thr = parseThreshold(thresholdInput.value);
+          if (renderMode.value !== 'mono' && !thr.ok) throw new Error('Boldness threshold must be a whole number from 1 to 255.');
+          const ss = parseSupersample(supersampleInput.value);
+          if (renderMode.value !== 'mono' && !ss.ok) throw new Error('Supersampling must be a whole number from 1 to 12.');
           const name = outputName.value.trim() || 'MYFONT';
           const inPath = `/tmp/input.${ext}`, outDir = '/tmp/out';
           py.FS.writeFile(inPath, new Uint8Array(await currentFile.arrayBuffer()));
           const run = py.globals.get('run_convert');
           let info;
-          try { info = JSON.parse(run(inPath, outDir, name, sizeInfo.sizes.join(','), fontWeight.value)); }
+          try { info = JSON.parse(run(inPath, outDir, name, sizeInfo.sizes.join(','), fontWeight.value, renderMode.value, thr.ok ? thr.value : 100, ss.ok ? ss.value : 8, +overhangRange.value, +trackRange.value)); }
           finally { run.destroy(); }
           const files = info.files;
           const results = files.map(path => {
@@ -543,7 +440,8 @@ except Exception:
           lastPack = { bytes: results[0].bytes.subarray(74), key: settingsKey() };
           renderSpecimen();
           setProgress(100);
-          say('Done. Your file is ready below.');
+          const skipped = (info.warnings || []).length;
+          say(skipped ? `Done. ${skipped} character${skipped === 1 ? ' is' : 's are'} missing from this font and were skipped.` : 'Done. Your file is ready below.');
         } catch (err) {
           console.error(err);
           const msg = String(err && err.message || err).split('\n').filter(Boolean).slice(-1)[0] || 'Unknown error';
@@ -600,6 +498,15 @@ except Exception:
       previewText.addEventListener('input', renderSpecimen);
       fontSize.addEventListener('input', () => { updateHelp(); renderSpecimen(); });
       fontWeight.addEventListener('change', renderSpecimen);
+      renderMode.addEventListener('change', () => { updateHelp(); renderSpecimen(); });
+      thresholdInput.addEventListener('input', () => {
+        thresholdInput.value = thresholdInput.value.replace(/\D/g, '').slice(0, 3);
+        const t = parseThreshold(thresholdInput.value); if (t.ok) thresholdRange.value = t.value;
+        updateHelp(); renderSpecimen();
+      });
+      thresholdRange.addEventListener('input', () => { thresholdInput.value = thresholdRange.value; updateHelp(); renderSpecimen(); });
+      supersampleInput.addEventListener('input', () => { supersampleInput.value = supersampleInput.value.replace(/\D/g, '').slice(0, 2); updateHelp(); renderSpecimen(); });
+      [overhangRange, trackRange].forEach(r => r.addEventListener('input', () => { updateHelp(); renderSpecimen(); }));
       outputName.addEventListener('input', () => { nameTouched = true; outputName.value = outputName.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 8); updateHelp(); });
       updateHelp(); renderSpecimen();
       convertButton.addEventListener('click', convert);
