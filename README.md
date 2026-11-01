@@ -4,7 +4,7 @@ Turn TTF/OTF fonts into [FontLibC](https://ce-programming.github.io/toolchain/li
 fonts for the TI-84 Plus CE.
 
 ```bash
-pip install cefont            # needs Python 3.9 + Pillow (fontTools optional)
+pip install cefont            # Python 3.11+; includes FreeType and Skia
 ```
 
 ## Command line
@@ -12,7 +12,7 @@ pip install cefont            # needs Python 3.9 + Pillow (fontTools optional)
 One step, TTF straight to a calculator appvar (archived `.8xv`):
 
 ```bash
-cefont build Bungee-Regular.ttf --weight bold      # -> BUNGEE.8xv, size 16
+cefont build Bungee-Regular.ttf                    # -> BUNGEE.8xv, size 16
 ```
 
 Send `BUNGEE.8xv` to the calculator, then in C: `fontlib_GetFontByIndex("BUNGEE", 0)`.
@@ -31,9 +31,24 @@ cefont convert Bungee-Regular.ttf -s 16 --weight bold -o bungee16.fnt --preview 
 cefont preview bungee16.fnt -t "Settings"
 ```
 
-`build` and `convert` render hinted 1-bit glyphs (`--mode aa` renders antialiased and
-thresholds it), trim the height to the ink, and set baseline / cap height / x-height.
+`build` and `convert` use FreeType's hinted 1-bit renderer by default for fast,
+crisp glyphs. `--mode aa` selects Skia antialiasing instead. Both trim the
+height to the ink and set baseline / cap height / x-height.
 FontLibC glyphs are 8-bit, so `--range` only accepts code points 0-255.
+
+Skia antialiasing supports supersampling, threshold tuning, glyph refinement,
+and horizontal stretching:
+
+```bash
+cefont build Bungee-Regular.ttf --mode aa -s 12
+```
+
+`--weight` only sets FontLibC metadata; it does not embolden the TTF's pixels.
+Choose an actual bold TTF file for bold glyph shapes.
+
+The Python package also reads legacy Windows raster `.FNT` files accepted by
+CEdev `convfont`, in addition to convfont text `.fnt` files, and writes compatible
+font binaries, font packs, and calculator appvars without invoking the CE toolchain.
 
 ## Library
 

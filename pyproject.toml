@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cefont"
-version = "1.1.1"
+dynamic = ["version"]          # single source of truth: cefont/__init__.py
 description = "Turn TTF/OTF fonts into FontLibC fonts for the TI-84 Plus CE"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["pillow>=9.2"]
+# Skia renders antialiased outlines; freetype-py provides hinted 1-bit glyphs.
+dependencies = ["skia-python>=87.5", "freetype-py>=2.4", "fonttools>=4.40"]
 authors = [{ name = "Akhilesh Gollapudi" }]
 license = "MIT"
 keywords = ["ti-84", "fontlibc", "ce-toolchain", "fonts"]
@@ -18,8 +19,8 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-fonttools = ["fonttools"]
-dev = ["pytest"]
+bench = ["numpy", "scipy"]     # only for `cefont bench --metric blur`
+dev = ["pytest", "numpy", "scipy"]
 
 [project.scripts]
 cefont = "cefont.cli:main"
@@ -27,5 +28,11 @@ cefont = "cefont.cli:main"
 [project.urls]
 Homepage = "https://github.com/coolprojects123/cefont"
 
+[tool.setuptools.dynamic]
+version = { attr = "cefont.__version__" }
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,22 +1,61 @@
-"""cefont command line: build (TTF -> appvar in one step), convert, preview.
+"""cefont: turn any TTF/OTF into a font for the TI-84 Plus CE.
+
+quick start
+  cefont MyFont.ttf                 build MYFONT.8xv at 16px (send it to the calc)
+  cefont MyFont.ttf -s 12 --tune    12px, with cefont picking the best settings
+  cefont MyFont.ttf -s 8-12         one pack with every size from 8 to 12
+  cefont preview MyFont.ttf -s 12   look at it in the terminal first
+  cefont info MyFont.ttf            which sizes fit, what is installed
+  cefont --help-all                 every advanced option
 
 No CE toolchain needed: the font pack and appvar are built in pure Python.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
 
-from . import tools
+from . import __version__, auto, bench, ftengine, tools
+from .fontpack import serialize_font, serialize_fontpack, to_c_array
+from .compare import score_font, score_vs_ttf, side_by_side_ttf
 from .model import Font, FntError
-from .raster import DEFAULT_SUPERSAMPLE, DEFAULT_THRESHOLD, from_ttf, parse_ranges
+from .raster import (DEFAULT_REFINE_BOOST, DEFAULT_REFINE_SIGMA, DEFAULT_SUPERSAMPLE,
+                     DEFAULT_THRESHOLD, from_ttf, parse_ranges, parse_sizes)
 
 WEIGHTS = ["thin", "extralight", "light", "semilight", "normal",
            "semibold", "bold", "extrabold", "black"]
 SAMPLE = "The quick brown fox jumps over the lazy dog 0123456789"
 TTF_EXT = (".ttf", ".otf", ".ttc")
+SHOW_ALL = False          # set by --help-all: show the advanced options in --help
+
+
+def _a(p, *flags, **kw):
+    """add_argument for an advanced option: hidden from --help unless --help-all."""
+    if not SHOW_ALL:
+        kw["help"] = argparse.SUPPRESS
+    return p.add_argument(*flags, **kw)
+
+
+_WARNED: set = set()
+
+
+def _warn(msg: str) -> None:
+    """Print each warning once per run (a multi-size build would repeat it)."""
+    if msg not in _WARNED:
+        _WARNED.add(msg)
+        print(f"warning: {msg}", file=sys.stderr)
+
+
+def _need_font(path) -> Path:
+    """Fail early, in plain words, if the font argument can't work."""
+    p = Path(path)
+    if not p.is_file():
+        hint = " (is that a folder?)" if p.is_dir() else ""
+        sys.exit(f"error: font file not found: {p}{hint}")
+    return p
 
 
 def _print_preview(font: Font, text: str) -> None:
@@ -27,12 +66,44 @@ def _print_preview(font: Font, text: str) -> None:
 
 
 def _make_font(path, size, a) -> Font:
+    tune = getattr(a, "tune", False)
+    if a.mode == "aa" and a.engine == "freetype":
+        raise ValueError("--mode aa requires the Skia engine")
+    if tune and (a.mode == "mono" or a.engine == "freetype"):
+        print("note: --tune needs Skia antialiasing; using fixed settings for the selected mode",
+              file=sys.stderr)
+        tune = False
+    if tune:
+        base = dict(tracking=a.tracking, weight=a.weight, style=a.style,
+                    space_above=a.space_above, space_below=a.space_below,
+                    trim=not a.no_trim, overhang=a.overhang, supersample=a.supersample,
+                    hinting=a.hinting, mono=False, engine="skia",
+                    **({"advance": a.advance} if a.advance else {}),
+                    xscale=a.xscale, target_width=a.target_width,
+                    warn=_warn)
+        if a.threshold is not None:     # explicit threshold: keep it, tune around it
+            base["threshold"] = a.threshold
+        fixed_x = a.target_width is not None or a.xscale != 1.0
+        jobs = max(1, getattr(a, "jobs", 0) or min(os.cpu_count() or 1, 8))
+        res = auto.autotune(path, size, codepoints=parse_ranges(a.range), base=base,
+                            tune_threshold=a.threshold is None,
+                            tune_xscale=not fixed_x and not a.no_stretch,
+                            max_xscale=a.max_xscale, per_glyph=not a.no_per_glyph,
+                            reference=tools.read_fnt(a.reference) if a.reference else None,
+                            jobs=jobs, engines=(a.engine,) if a.engine else ("skia", "freetype"),
+                            progress=lambda m: print(f"  tuning: {m}", file=sys.stderr))
+        print(res.report(), file=sys.stderr)
+        return res.font
     return from_ttf(
-        path, size, codepoints=parse_ranges(a.range), mono=a.mode == "mono",
-        threshold=a.threshold, supersample=a.supersample, tracking=a.tracking, weight=a.weight, style=a.style,
+        path, size, codepoints=parse_ranges(a.range),
+        mono=(True if a.mode == "mono" else False if a.mode == "aa" else None),
+        engine=a.engine or "auto", hinting=a.hinting, advance=a.advance,
+        threshold=a.threshold,
+        supersample=a.supersample, tracking=a.tracking, weight=a.weight, style=a.style,
         space_above=a.space_above, space_below=a.space_below, trim=not a.no_trim,
-        overhang=a.overhang,
-        warn=lambda m: print(f"warning: {m}", file=sys.stderr))
+        overhang=a.overhang, refine=a.refine_sigma if a.refine else 0.0,
+        refine_boost=a.refine_boost, xscale=a.xscale, target_width=a.target_width,
+        warn=_warn)
 
 
 def _write_fnt(font: Font, ttf: Path, size: int, out: Path) -> None:
@@ -41,26 +112,75 @@ def _write_fnt(font: Font, ttf: Path, size: int, out: Path) -> None:
 
 
 def _add_raster_args(p):
-    p.add_argument("--range", default="32-126", help="code points, e.g. 32-126,160-255")
-    p.add_argument("--mode", choices=["aa", "mono"], default="aa",
-                   help="aa = supersampled high quality (default); mono = hinted 1-bit")
-    p.add_argument("--threshold", type=int, default=DEFAULT_THRESHOLD,
+    p.add_argument("--range", default="32-126",
+                   help="characters to include: ascii (default), latin1, all, or e.g. 32-126,160-255")
+    _a(p, "--mode", choices=["auto", "aa", "mono"], default="auto",
+                   help="auto = fast hinted 1-bit (default); aa = Skia antialiasing; "
+                        "mono = hinted 1-bit")
+    _a(p, "--threshold", type=int, default=None,
                    help="pixel coverage 0-255 needed to turn a pixel on (default "
-                        f"{DEFAULT_THRESHOLD}; lower = bolder, higher = thinner)")
-    p.add_argument("--supersample", type=int, default=DEFAULT_SUPERSAMPLE,
+                        f"{DEFAULT_THRESHOLD}; lower = bolder, higher = thinner; "
+                        "with --tune: kept and tuned around when given)")
+    _a(p, "--supersample", type=int, default=DEFAULT_SUPERSAMPLE,
                    help=f"render N times larger, then downsample (default {DEFAULT_SUPERSAMPLE}; 1 = off)")
-    p.add_argument("--tracking", type=int, default=0)
+    _a(p, "--tracking", type=int, default=0)
     p.add_argument("--weight", default="normal", choices=WEIGHTS)
-    p.add_argument("--style", default="sans-serif")
-    p.add_argument("--space-above", type=int, default=0)
-    p.add_argument("--space-below", type=int, default=0)
-    p.add_argument("--no-trim", action="store_true")
-    p.add_argument("--overhang", type=int, default=1,
+    _a(p, "--style", default="sans-serif")
+    _a(p, "--space-above", type=int, default=0)
+    _a(p, "--space-below", type=int, default=0)
+    _a(p, "--no-trim", action="store_true")
+    _a(p, "--refine", action="store_true",
+                   help="turn on the optional pixel-refinement pass (off by default: a plain "
+                        "threshold scores higher against the TTF)")
+    _a(p, "--refine-sigma", type=float, default=DEFAULT_REFINE_SIGMA,
+                   help=f"blur (px) the refinement pass judges the bitmap with (default {DEFAULT_REFINE_SIGMA})")
+    _a(p, "--refine-boost", type=float, default=DEFAULT_REFINE_BOOST,
+                   help=f"ink-weight bias in refinement (default {DEFAULT_REFINE_BOOST}; "
+                        "higher = bolder, 1.0 = exact area match, thinner)")
+    p.add_argument("-t", "--tune", action="store_true",
+                   help="pick threshold, refinement, horizontal stretch and per-glyph "
+                        "sub-pixel placement automatically by comparing the bitmap with "
+                        "the TTF (weight, cap/x-height, widths, overlap); manual settings "
+                        "are the default; an explicit --xscale/--target-width is kept as given")
+    _a(p, "--auto", dest="tune", action="store_true",
+                   help=argparse.SUPPRESS)  # old spelling of --tune
+    _a(p, "--score", choices=["auto", "outline", "hinted"], default="auto",
+                   help="what the match %% is measured against: hinted = the hinted outline "
+                        "FreeType draws at this size, outline = the raw unhinted outline "
+                        "(auto: hinted for freetype-engine fonts, outline otherwise; the raw "
+                        "number is also shown when comparison computes it)")
+    p.add_argument("--engine", choices=["freetype", "skia"], default=None,
+                   help="rasterizer: freetype = fast hinted 1-bit (default); "
+                        "skia = antialiased outline rendering")
+    _a(p, "--hinting", choices=["auto", "native", "default", "none"], default="auto",
+                   help="freetype engine hinting (default auto = FreeType's autohinter)")
+    _a(p, "--advance", choices=["round", "ceil", "floor", "hinted"], default=None,
+                   help="how glyph advances are rounded to whole px (default round; ceil for "
+                        "freetype; 'hinted' = FreeType's own, freetype only)")
+    _a(p, "--reference", metavar="REF.fnt",
+                   help="with --tune, match this known-good bitmap font of the same face (e.g. a "
+                        "convfont .fnt) pixel for pixel instead of using the outline heuristics")
+    _a(p, "--max-xscale", type=float, default=1.16, metavar="X",
+                   help="with --tune, the widest stretch it may choose (default 1.16)")
+    _a(p, "--no-per-glyph", action="store_true",
+                   help="with --tune, skip the glyph-by-glyph pass (per-glyph threshold and "
+                        "sub-pixel placement)")
+    _a(p, "--no-stretch", action="store_true",
+                   help="with --tune, keep the natural width (xscale 1)")
+    _a(p, "-j", "--jobs", type=int, default=0, metavar="N",
+                   help="with --tune, tune glyphs in N parallel processes "
+                        "(default: one per CPU core, up to 8; 1 = serial)")
+    _a(p, "--xscale", type=float, default=1.0,
+                   help="stretch glyphs horizontally by this factor (default 1; 1.2 = 20%% wider)")
+    _a(p, "--target-width", type=float, default=None, metavar="PX",
+                   help="pick --xscale so the average glyph is about PX wide (e.g. 8); overrides --xscale")
+    _a(p, "--overhang", type=int, default=1,
                    help="px of ink allowed past a glyph's advance width on each side "
                         "(default 1; use 99 for the old unclamped behaviour)")
 
 
 def cmd_convert(a):
+    _need_font(a.font)
     try:
         font = _make_font(a.font, a.size, a)
     except (OSError, ValueError) as e:
@@ -69,12 +189,14 @@ def cmd_convert(a):
     _write_fnt(font, Path(a.font), a.size, out)
     print(f"{out}: {len(font.glyphs)} glyphs, height {font.height}, baseline "
           f"{font.baseline}, cap {font.cap_height}, x {font.x_height}")
+    m = score_font(font, Path(a.font), a.size, basis=a.score)
+    print(_match_desc(m, Path(a.font).name))
     if a.preview:
         _print_preview(font, a.preview)
 
 
 def cmd_preview(a):
-    path = Path(a.file)
+    path = _need_font(a.file)
     try:
         if path.suffix.lower() in TTF_EXT:
             if not a.size:
@@ -89,66 +211,283 @@ def cmd_preview(a):
     _print_preview(font, a.text)
 
 
+DEFAULT_ACCEPT = 60.0   # at 8-16px a good bitmap scores about 45-72 against its TTF
+TARGET_MATCH = 90.0     # what --tune aims for; builds below it get a note
+
+
+def _match_note(m) -> str:
+    """Suffix for the match line explaining how the score relates to the target."""
+    if m.score >= TARGET_MATCH:
+        return ""
+    if m.ceiling and m.score >= 0.97 * m.ceiling:
+        return (f"  (no 1-bit font can beat ~{m.ceiling:.0f}% at this size; "
+                f"{TARGET_MATCH:g}% needs more pixels)")
+    if m.ceiling and m.ceiling < TARGET_MATCH:
+        return f"  (pixel ceiling at this size: ~{m.ceiling:.0f}%)"
+    return f"  (below the {TARGET_MATCH:g}% target)"
+SWEEP_THRESHOLDS = bench.SWEEP_THRESHOLDS
+
+
+def _match_desc(m, ttf_name: str) -> str:
+    """One line: the score, which yardstick it is on, and how it relates to the target."""
+    if m.basis != "hinted":
+        return f"match {m.score:.1f}% vs {ttf_name}{_match_note(m)}"
+    s = f"match {m.score:.1f}% vs the hinted {ttf_name}"
+    if m.score < TARGET_MATCH:
+        s += (f" (no 1-bit font can beat ~{m.ceiling:.0f}% of it)"
+              if m.ceiling and m.score >= 0.97 * m.ceiling else f" (below the {TARGET_MATCH:g}% target)")
+    if m.raw is not None:
+        s += (f"\n    vs the raw, unhinted outline: {m.raw.score:.1f}% "
+              f"(no 1-bit font can beat ~{m.raw.ceiling:.0f}% of it at this size)")
+    return s
+
+
+def _report(m, accept):
+    if m.basis == "hinted":
+        print(f"scored against the hinted outline FreeType draws at this size"
+              + (f"; against the raw outline it is {m.raw.score:.1f}% "
+                 f"(ceiling {m.raw.ceiling:.1f}%)" if m.raw is not None else ""))
+    print(f"match {m.score:.1f}%  (pixel overlap {m.ink:.1f}%, {m.width_match:.0f}% of "
+          f"widths within rounding of the TTF, {m.compared} glyphs scored"
+          + (f", pixel ceiling {m.ceiling:.1f}%" if m.ceiling else "") + ")")
+    worst = ", ".join(f"{chr(c)!r} {v:.0f}%" for c, v in m.worst(5))
+    if worst:
+        print(f"  weakest: {worst}")
+    ok = m.accepted(accept)
+    print(f"{'ACCEPTED' if ok else 'REJECTED'}: {m.score:.1f}% vs required {accept:g}%")
+    return ok
+
+
+def _sweep(ttf, size, a):
+    """Try threshold x refine variants against the TTF; best first."""
+    results = []
+    for thr in SWEEP_THRESHOLDS:
+        for refine, boost in ((False, a.refine_boost), (True, 1.0), (True, a.refine_boost)):
+            v = argparse.Namespace(**vars(a))
+            v.threshold, v.refine, v.refine_boost = thr, refine, boost
+            v.tune = False
+            try:
+                f = _make_font(ttf, size, v)
+            except ValueError:
+                continue
+            label = f"--threshold {thr}" + (f" --refine --refine-boost {boost:g}" if refine else "")
+            results.append((score_vs_ttf(f, ttf, size).score, label, f))
+    return sorted(results, key=lambda r: -r[0])
+
+
+def cmd_compare(a):
+    """Score a bitmap font against the ORIGINAL TTF/OTF it is meant to reproduce."""
+    ttf = _need_font(a.ttf)
+    try:
+        if a.fnt:
+            cand = Font.from_fnt(Path(a.fnt).read_text(encoding="utf-8-sig"))
+            what = a.fnt
+        elif a.sweep:
+            ranked = _sweep(ttf, a.size, a)
+            if not ranked:
+                sys.exit("error: no sweep variant produced a font")
+            print("best settings tried:")
+            for score, label, _ in ranked[:5]:
+                print(f"  {score:5.1f}%  {label}")
+            cand, what = ranked[0][2], f"best sweep result ({ranked[0][1]})"
+        else:
+            what = "cefont output"
+            cand = _make_font(ttf, a.size, a)
+        m = score_font(cand, ttf, a.size, parse_ranges(a.range), basis=a.score)
+    except (OSError, ValueError, FntError) as e:
+        sys.exit(f"error: {e}")
+    print(f"{what} vs {ttf.name} at {a.size}px")
+    for ch in a.show:
+        print()
+        print("\n".join(side_by_side_ttf(cand, ttf, a.size, ch)))
+        print()
+    sys.exit(0 if _report(m, a.accept) else 1)
+
+
+def cmd_bench(a):
+    """Score settings across several fonts/sizes (replaces the loose bench scripts)."""
+    try:
+        fonts = [str(_need_font(f)) for f in a.fonts] if a.fonts else bench.default_fonts()
+        sizes = parse_sizes(a.sizes)
+        variants = bench.sweep_variants() if a.sweep else bench.parse_variants(a.variants)
+        if not a.json:
+            print(f"benchmarking {len(fonts)} font(s) x {len(sizes)} size(s) x "
+                  f"{len(variants)} variant(s)...", file=sys.stderr)
+        res = bench.run_bench(
+            fonts, sizes, variants, metric=a.metric, sigma=a.sigma,
+            progress=None if a.json else (lambda m: print(f"  {m}", file=sys.stderr)))
+    except (OSError, ValueError) as e:
+        sys.exit(f"error: {e}")
+    print(res.to_json() if a.json else res.table())
+    if a.min_mean is not None:
+        first = res.variants[0]
+        mean = res.means()[first]
+        ok = mean >= a.min_mean if res.higher_is_better else mean <= a.min_mean
+        print(f"{'PASS' if ok else 'FAIL'}: mean of '{first}' is {mean:.3f}, "
+              f"limit {a.min_mean:g}", file=sys.stderr)
+        sys.exit(0 if ok else 1)
+
+
 def cmd_build(a):
     try:
-        sizes = [int(x) for x in a.size.split(",") if x.strip()]
-    except ValueError:
-        sys.exit(f"error: bad size list {a.size!r} (use e.g. 16 or 12,16)")
-    first = Path(a.inputs[0])
-    try:
-        name = tools.appvar_name(a.name or first.stem)
+        sizes = parse_sizes(a.size)
+        for item in a.inputs:
+            _need_font(item)
+        first = Path(a.inputs[0])
+        name = tools.appvar_name(a.name, derive=False) if a.name else tools.appvar_name(first.stem)
         title = a.title or re.split(r"[-_ ]", first.stem)[0] or name
-        fnts, previews, scratch = [], [], []
+        fonts, labels, scored, saved = [], [], [], []
         for item in a.inputs:
             p = Path(item)
             if p.suffix.lower() in TTF_EXT:
                 for size in sizes:
+                    label = f"{p.stem} {size}px"
+                    print(f"{label}: building...", file=sys.stderr)
                     font = _make_font(p, size, a)
-                    fnt = Path.cwd() / f"{p.stem}{size}.fnt"   # no tempfile needed
-                    _write_fnt(font, p, size, fnt)
-                    fnts.append(fnt)
-                    scratch.append(fnt)
-                    previews.append((f"{p.stem} {size}px", font))
+                    fonts.append(font)
+                    labels.append(label)
+                    scored.append((label, font, p, size))
+                    if a.keep_fnt:
+                        fnt = Path(f"{p.stem}{size}.fnt")
+                        _write_fnt(font, p, size, fnt)
+                        saved.append(fnt)
+            elif p.suffix.lower() == ".fnt":
+                fonts.append(tools.read_fnt(p))
+                labels.append(p.name)
             else:
-                fnts.append(p)
+                sys.exit(f"error: {p.name}: expected a .ttf/.otf/.ttc font or a .fnt file")
+        failed = False
+        for label, font, ttf, size in scored:
+            m = score_font(font, ttf, size, basis=a.score, include_raw=False)
+            if a.accept is not None:
+                print(f"{label}:")
+                failed |= not _report(m, a.accept)
+            else:
+                print(f"{label}: {_match_desc(m, ttf.name)}")
+        if failed:
+            sys.exit("error: below the match threshold, appvar not written")
         if a.carray:
-            tools.font_to_carray(fnts[0], Path(a.carray))
-        data = tools.make_fontpack(fnts, title, a.author, a.version)
-        if not a.keep_fnt:                                    # clean up scratch .fnts
-            for f in scratch:
-                try:
-                    f.unlink()
-                except OSError:
-                    pass
+            Path(a.carray).write_text(to_c_array(serialize_font(fonts[0])), encoding="utf-8")
+        data = serialize_fontpack(fonts, name=title, author=a.author or None,
+                                  version=a.version, codepage="ASCII")
+        blob = tools.make_appvar(name, data, archived=not a.no_archive)
+        tools.verify_appvar(blob)                  # read it back before writing anything
         out = Path(a.output or f"{name}.8xv")
-        out.write_bytes(tools.make_appvar(name, data, archived=not a.no_archive))
-    except (OSError, ValueError, FntError) as e:
+        out.write_bytes(blob)
+    except (OSError, ValueError) as e:             # FntError is a ValueError
         sys.exit(f"error: {e}")
-    print(f"{out}: appvar {name}, {len(fnts)} font(s), {len(data)} bytes"
+    print(f"\n{out}: appvar {name}, {len(fonts)} font(s), {len(data)} bytes"
           f"{'' if a.no_archive else ', archived'}")
-    print(f'send it to the calc, then: fontlib_GetFontByIndex("{name}", 0)')
+    for f in saved:
+        print(f"  also wrote {f}")
+    print(f'send it to the calc, then: fontlib_GetFontByIndex("{name}", 0)'
+          + (f"  (index 0-{len(fonts) - 1}: {', '.join(labels)})" if len(fonts) > 1 else ""))
     if a.preview:
-        for label, font in previews:
+        for label, font in zip(labels, fonts):
             print(f"\n{label}:")
             _print_preview(font, a.preview)
 
 
+def _dep(label, ok, hint):
+    return f"  {label:<14}{'yes' if ok else 'no   -> ' + hint}"
+
+
+def cmd_info(a):
+    """Dependencies, and (with a font) coverage and the sizes it can be built at."""
+    def has(mod):
+        try:
+            __import__(mod)
+            return True
+        except Exception:
+            return False
+    print(f"cefont {__version__}")
+    print(_dep("Skia", has("skia"), "pip install skia-python  (required)"))
+    print(_dep("freetype-py", ftengine.available(), "pip install freetype-py  (hinted, crisper glyphs)"))
+    print(_dep("fontTools", has("fontTools"), "pip install fonttools  (skips glyphs the font lacks)"))
+    print(_dep("numpy+scipy", has("numpy") and has("scipy"), "pip install numpy scipy  (bench --metric blur)"))
+    if not a.font:
+        return
+    ttf = _need_font(a.font)
+    try:
+        cps = parse_ranges(a.range)
+        have = __import__("cefont.raster", fromlist=["x"]).font_codepoints(ttf)
+        if have is not None:
+            miss = [c for c in cps if c not in have and c != 32]
+            print(f"\n{ttf.name}: has {len(cps) - len(miss)} of {len(cps)} characters in "
+                  f"--range {a.range}" + (f"; missing {len(miss)}" if miss else ""))
+        else:
+            print(f"\n{ttf.name}: coverage unknown (pip install fonttools)")
+        fits, bad = [], []
+        for size in range(a.min_size, a.max_size + 1):
+            try:
+                f = from_ttf(ttf, size, codepoints=cps)
+                fits.append((size, f.height))
+            except ValueError:
+                bad.append(size)
+        if fits:
+            print("buildable sizes (px -> font height): "
+                  + ", ".join(f"{s}->{h}" for s, h in fits))
+        if bad:
+            print(f"too wide for FontLibC's 24px glyph limit: {bad[0]}-{bad[-1]}px"
+                  if len(bad) > 1 else f"too wide at {bad[0]}px")
+        if not fits:
+            sys.exit("error: no size in that range can be built")
+    except (OSError, ValueError) as e:
+        sys.exit(f"error: {e}")
+
+
+COMMANDS = ("build", "convert", "compare", "bench", "preview", "info")
+
+
+def _normalize(argv: list[str]) -> list[str]:
+    """`cefont Font.ttf -s 12` means `cefont build Font.ttf -s 12`."""
+    if argv and argv[0] not in COMMANDS and not argv[0].startswith("-"):
+        return ["build"] + argv
+    return argv
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="cefont", description=__doc__)
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    global SHOW_ALL
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--help-all" in argv:
+        SHOW_ALL = True
+        argv = ["-h" if x == "--help-all" else x for x in argv]
+        if argv == ["-h"]:                         # bare --help-all: intro + every build option
+            print(__doc__)
+            argv = ["build", "-h"]
+    argv = _normalize(argv)
+    try:
+        _main(argv)
+    except KeyboardInterrupt:
+        sys.exit("\ninterrupted")
+    except (OSError, ValueError) as e:             # anything a command didn't catch itself
+        if os.environ.get("CEFONT_DEBUG"):
+            raise
+        sys.exit(f"error: {e}")
+
+
+def _main(argv):
+    ap = argparse.ArgumentParser(prog="cefont", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--help-all", action="help", help="show every advanced option")
+    ap.add_argument("--version", action="version", version=f"cefont {__version__}")
+    sub = ap.add_subparsers(dest="cmd", required=True, metavar="COMMAND")
 
     b = sub.add_parser("build", help="TTF/OTF (or .fnt files) -> calc appvar (.8xv), one step")
     b.add_argument("inputs", nargs="+", help="font file(s): .ttf/.otf, or ready-made .fnt")
-    b.add_argument("-s", "--size", default="16", help="pixel size, or a list like 12,16 (default 16)")
+    b.add_argument("-s", "--size", default="16", help="pixel size, a list (12,16) or a range (8-12); default 16")
     b.add_argument("-o", "--output", help="output file (default NAME.8xv)")
     b.add_argument("--name", help="appvar name, max 8 letters/digits (default: from file name)")
-    b.add_argument("--title", help="font pack name shown to programs (default: from file name)")
-    b.add_argument("--author", default="")
-    b.add_argument("--version", default="1")
-    b.add_argument("--no-archive", action="store_true", help="leave the appvar in RAM, not archive")
-    b.add_argument("--keep-fnt", action="store_true", help="also save the generated .fnt files")
-    b.add_argument("--carray", metavar="OUT.inc", help="also write the first font as a C array")
+    _a(b, "--title", help="font pack name shown to programs (default: from file name)")
+    _a(b, "--author", default="")
+    _a(b, "--version", default="1")
+    _a(b, "--no-archive", action="store_true", help="leave the appvar in RAM, not archive")
+    _a(b, "--keep-fnt", action="store_true", help="also save the generated .fnt files")
+    _a(b, "--carray", metavar="OUT.inc", help="also write the first font as a C array")
     b.add_argument("--preview", metavar="TEXT")
+    b.add_argument("--accept", type=float, metavar="PCT",
+                   help="score each font against its TTF and only write the appvar if every "
+                        f"one reaches PCT %% (try {DEFAULT_ACCEPT:g})")
     _add_raster_args(b)
     b.set_defaults(func=cmd_build)
 
@@ -160,12 +499,53 @@ def main(argv=None):
     _add_raster_args(c)
     c.set_defaults(func=cmd_convert)
 
+    m = sub.add_parser("compare", help="score a font against its original TTF/OTF; exit 0 if accepted")
+    m.add_argument("ttf", help="the original TTF/OTF")
+    m.add_argument("-s", "--size", type=int, required=True, help="pixel size")
+    m.add_argument("--fnt", metavar="FILE.fnt",
+                   help="score this existing bitmap font (e.g. one made by another tool) "
+                        "instead of generating one")
+    m.add_argument("--accept", type=float, default=DEFAULT_ACCEPT,
+                   help=f"match %% needed to accept (default {DEFAULT_ACCEPT:g})")
+    m.add_argument("--sweep", action="store_true",
+                   help="try threshold/refine variants and score the best")
+    m.add_argument("--show", default="", metavar="CHARS",
+                   help="print the TTF outline next to the bitmap for these characters")
+    _add_raster_args(m)
+    m.set_defaults(func=cmd_compare)
+
+    bn = sub.add_parser("bench", help="score settings across several fonts and sizes")
+    bn.add_argument("fonts", nargs="*", help="TTF/OTF files (default: system fonts that exist)")
+    bn.add_argument("-s", "--sizes", default=",".join(map(str, bench.DEFAULT_SIZES)),
+                    help="pixel sizes, e.g. 8,12,16 (default %(default)s)")
+    bn.add_argument("--variants", metavar="DICT",
+                    help='settings to compare, e.g. \'{"a": {}, "b": {"threshold": 85}}\' '
+                         "(keys are from_ttf arguments; default: one 'default' variant)")
+    bn.add_argument("--sweep", action="store_true",
+                    help="compare a threshold x refine grid instead of --variants")
+    bn.add_argument("--metric", choices=sorted(bench.METRICS), default="match",
+                    help="match = overlap vs TTF, higher better (default); "
+                         "blur = blurred error, lower better (needs numpy+scipy)")
+    bn.add_argument("--sigma", type=float, default=bench.BLUR_SIGMA,
+                    help="blur radius for the blur metric (default %(default)s)")
+    bn.add_argument("--min-mean", type=float, metavar="X",
+                    help="exit 1 unless the first variant's mean meets X (for CI)")
+    bn.add_argument("--json", action="store_true", help="machine-readable output")
+    bn.set_defaults(func=cmd_bench)
+
     p = sub.add_parser("preview", help="ASCII preview of a .fnt (or a TTF with -s)")
     p.add_argument("file")
     p.add_argument("-t", "--text", default=SAMPLE)
     p.add_argument("-s", "--size", type=int)
     p.add_argument("--range", default="32-126")
     p.set_defaults(func=cmd_preview)
+
+    i = sub.add_parser("info", help="check what is installed; with a font, which sizes fit")
+    i.add_argument("font", nargs="?", help="TTF/OTF to inspect (optional)")
+    i.add_argument("--range", default="32-126", help="characters to check (default ascii)")
+    i.add_argument("--min-size", type=int, default=6)
+    i.add_argument("--max-size", type=int, default=32)
+    i.set_defaults(func=cmd_info)
 
     a = ap.parse_args(argv)
     a.func(a)

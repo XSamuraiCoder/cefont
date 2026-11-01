@@ -19,6 +19,20 @@ class Glyph:
     width: int
     rows: list[str]
 
+    def validate(self, height: int, label: str = "glyph") -> None:
+        """Raise FntError unless this glyph is `width` x `height` of '#'/' ' only."""
+        if not isinstance(self.width, int) or self.width < 1:
+            raise FntError(f"{label}: width must be a positive integer, got {self.width!r}")
+        if len(self.rows) != height:
+            raise FntError(f"{label}: {len(self.rows)} rows, font height is {height}")
+        for i, row in enumerate(self.rows):
+            if len(row) != self.width:
+                raise FntError(f"{label}: row {i} is {len(row)} wide, glyph width is {self.width}")
+            bad = set(row) - {"#", " "}
+            if bad:
+                raise FntError(f"{label}: row {i} has characters other than '#' and ' ': "
+                               f"{''.join(sorted(bad))!r}")
+
 
 @dataclass
 class Font:
@@ -31,7 +45,35 @@ class Font:
     space_above: int = 0
     space_below: int = 0
     name: str = ""
+    xscale: float = 1.0   # horizontal stretch used when rasterized (scoring needs it)
+    engine: str = ""      # which rasterizer made it ('skia' or 'freetype'), informational
+    hinting: str = ""     # freetype hinting mode used, if any
     glyphs: dict[int, Glyph] = field(default_factory=dict)
+
+    # ---- checking
+    def validate(self, max_width: int | None = None) -> "Font":
+        """Check the font is internally consistent; returns self so it chains.
+
+        Raises FntError (a ValueError) naming the first problem: no glyphs,
+        bad height/baseline, code points outside 0-255, rows of the wrong
+        length or with characters other than '#' and ' ', or a glyph wider
+        than `max_width` (FontLibC allows 24).
+        """
+        if not self.glyphs:
+            raise FntError("font has no glyphs")
+        if not 0 < self.height <= 127:
+            raise FntError(f"font height {self.height} out of range (1-127)")
+        for name in ("baseline", "cap_height", "x_height", "space_above", "space_below"):
+            v = getattr(self, name)
+            if not isinstance(v, int) or not 0 <= v <= 255:
+                raise FntError(f"{name} must be an integer 0-255, got {v!r}")
+        for cp, g in sorted(self.glyphs.items()):
+            if not 0 <= cp <= 255:
+                raise FntError(f"code point {cp} outside 0-255 (FontLibC fonts are 8-bit)")
+            g.validate(self.height, f"U+{cp:02X}")
+            if max_width is not None and g.width > max_width:
+                raise FntError(f"U+{cp:02X}: width {g.width} is over the {max_width}px limit")
+        return self
 
     # ---- measuring / rendering
     def text_width(self, text: str) -> int:
@@ -96,6 +138,7 @@ class Font:
             return None
 
         font = cls(height=0, baseline=0)
+        seen_style = False
         opts = {"double width": False, "default width": 0, "fixed-width": 0}
         while True:
             item = next_meta()
@@ -109,7 +152,12 @@ class Font:
             elif tag == "weight":
                 font.weight = val
             elif tag == "style":
-                font.style = val
+                # convfont allows several Style lines (e.g. Sans-serif + Upright
+                # + Proportional); they combine, so accumulate instead of overwrite
+                font.style = val if font.style == "sans-serif" and not seen_style else f"{font.style} {val}"
+                seen_style = True
+            elif tag == "code page":
+                pass
             elif tag == "cap height":
                 font.cap_height = parse_number(val)
             elif tag == "x-height":
@@ -142,6 +190,8 @@ class Font:
                 gl_width = parse_number(val)
             elif tag == "double width":
                 gl_double = val.lower() == "true"
+            elif tag in ("name", "unicode"):
+                pass  # informational glyph tags written by convfont's own files
             elif tag == "data":
                 raw = lines[pos:pos + font.height]
                 if len(raw) < font.height:
