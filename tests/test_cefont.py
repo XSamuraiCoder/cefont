@@ -8,10 +8,16 @@ from cefont import (Font, FntError, Glyph, appvar_name, from_ttf, make_appvar, p
 from cefont.cli import main
 from cefont.tools import read_fnt
 
-TTF = next((p for p in ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-                        "C:/Windows/Fonts/arial.ttf", "/Library/Fonts/Arial.ttf")
-            if Path(p).is_file()), None)
+FONT_CANDIDATES = (
+    os.environ.get("CEFONT_TEST_FONT"),
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/Library/Fonts/Arial.ttf",
+)
+TTF = next((p for p in FONT_CANDIDATES if p and Path(p).is_file()), None)
 
 
 def tiny():

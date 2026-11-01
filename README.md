@@ -3,6 +3,8 @@
 Turn TTF/OTF fonts into [FontLibC](https://ce-programming.github.io/toolchain/libraries/fontlibc.html)
 fonts for the TI-84 Plus CE.
 
+CI runs the test suite on Windows, Linux, and macOS.
+
 ```bash
 pip install cefont            # Python 3.11+; includes FreeType and Skia
 ```
@@ -16,7 +18,8 @@ cefont build Bungee-Regular.ttf                    # -> BUNGEE.8xv, size 16
 ```
 
 Send `BUNGEE.8xv` to the calculator, then in C: `fontlib_GetFontByIndex("BUNGEE", 0)`.
-Needs `convfont` (CE C toolchain) on PATH or in `$CEDEV/bin`.
+The Python package writes the appvar directly and does not require `convfont` or
+the CE C toolchain.
 
 ```bash
 cefont build Font.ttf -s 12,16 --name MYFONT       # two sizes in one pack
